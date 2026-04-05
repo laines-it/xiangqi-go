@@ -1334,21 +1334,90 @@ func Move2Str(m MoveNG) string {
 
 func (pos *PositionNG) String() string {
 	b := pos.PiecesAllColor(ALL_PIECES)
-	s := "\n+---+---+---+---+---+---+---+---+---+\n"
+
+	s := "\n  ╔"
+	for range 9 {
+		s += "═══"
+	}
+	s += "╗\n"
+
 	for r := RANK_9; r >= RANK_0; r-- {
+		s += fmt.Sprintf("%d ║", r)
 		for f := FILE_A; f <= FILE_I; f++ {
+			var between string
+			if r == RANK_5 || r == RANK_0 {
+				between = "┴"
+			} else if r == RANK_4 || r == RANK_9 {
+				between = "┬"
+			} else if f == FILE_A {
+				between = "├"
+			} else if f == FILE_I {
+				between = "┤"
+			} else {
+				between = "┼"
+			}
 			if b.And(SquareBB[MakeSquareNG(f, r)]).IsNotZero() {
 				pc := pos.Board[MakeSquareNG(f, r)]
-				pcStr := piectStr(pc)
-				s += fmt.Sprintf("| %s", pcStr)
+				pcStr := pieceEuropean(pc)
+				s += fmt.Sprintf(" %s ", pcStr)
 			} else {
-				s += "|   "
+				if f > FILE_A {
+					s += "─"
+				} else {
+					s += " "
+				}
+				s += between
+				if f < FILE_I {
+					s += "─"
+				} else {
+					s += " "
+				}
 			}
 		}
-		s += "| " + string('0'+rune(r)) + "\n+---+---+---+---+---+---+---+---+---+\n"
+		s += "║ " + string('0'+rune(r)) + "\n"
 	}
-	s += "  a   b   c   d   e   f   g   h   i\n"
+	s += "  ╚"
+	for range 9 {
+		s += "═══"
+	}
+	s += "╝\n"
+	s += "    1  2  3  4  5  6  7  8  9\n"
 	return s
+}
+
+func pieceEuropean(pt Piece) string {
+	switch pt {
+	case W_ROOK:
+		return "\033[31mR\033[0m"
+	case W_ADVISOR:
+		return "\033[31mA\033[0m"
+	case W_CANNON:
+		return "\033[31mC\033[0m"
+	case W_PAWN:
+		return "\033[31mP\033[0m"
+	case W_KNIGHT:
+		return "\033[31mN\033[0m"
+	case W_BISHOP:
+		return "\033[31mE\033[0m"
+	case W_KING:
+		return "\033[31mK\033[0m"
+
+	case B_ROOK:
+		return "\033[32mR\033[0m"
+	case B_ADVISOR:
+		return "\033[32mA\033[0m"
+	case B_CANNON:
+		return "\033[32mC\033[0m"
+	case B_PAWN:
+		return "\033[32mP\033[0m"
+	case B_KNIGHT:
+		return "\033[32mN\033[0m"
+	case B_BISHOP:
+		return "\033[32mE\033[0m"
+	case B_KING:
+		return "\033[32mK\033[0m"
+	}
+	return "NULL"
 }
 
 func piectStr(pt Piece) string {

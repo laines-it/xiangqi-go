@@ -1,33 +1,32 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"log"
 	"os"
 	"runtime/debug"
 
-	"github.com/hmgle/godogpaw/ucci"
+	"github.com/hmgle/godogpaw/engine"
 	"github.com/sirupsen/logrus"
 )
 
 func main() {
-	defer logPanic()
-	/*
-		f, err := os.Create("cpu_profile")
-		if err != nil {
-			log.Fatal("create:", err)
-		}
-		defer f.Close()
-		err = pprof.StartCPUProfile(f)
-		if err != nil {
-			log.Fatal(err)
-		}
-		defer pprof.StopCPUProfile()
-	*/
+	initialFen := "rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w - - 0 1"
+	var pos engine.PositionNG
+	pos.Set(initialFen)
+	for i := range 10 {
+		GetBestMove(i, &pos)
+		fmt.Println(pos.String())
+	}
+}
 
-	ucciProtocol := ucci.NewProtocol()
-	log.Printf("finish init\n")
-	ucciProtocol.Run()
+func GetBestMove(i int, pos *engine.PositionNG) {
+	var state engine.StateInfo
+	var mv engine.MoveNG
+	mv = pos.SearchPosition(8)
+	fmt.Println(i, pos.MoveStr(mv))
+	pos.DoMove(mv, &state)
 }
 
 func init() {
