@@ -6,16 +6,19 @@ import (
 )
 
 type searchNode struct {
-	alpha   Value
-	beta    Value
-	best    MoveNG
-	score   Value
-	depth   uint8
-	pvNode  bool
-	inCheck bool
+	alpha Value
+	beta  Value
 }
 
-func enterNode(ctx context.Context, pos *PositionNG, node searchNode) (Value, Value, bool, Value) {
+type ybwcResult struct {
+	alpha     Value
+	bestMove  MoveNG
+	hashFlag  int8
+	legalMove bool
+	cutoff    bool
+}
+
+func enterNode(ctx context.Context, pos *PositionNG, node searchNode, depth uint8) (Value, Value, bool, Value) {
 	if pos.IsDraw() {
 		return node.alpha, node.beta, true, 0
 	}
@@ -24,7 +27,7 @@ func enterNode(ctx context.Context, pos *PositionNG, node searchNode) (Value, Va
 		return node.alpha, node.beta, true, -MATERIAL_WEIGHTS[W_CANNON]
 	}
 
-	if node.depth == 0 {
+	if depth == 0 {
 		return node.alpha, node.beta, true, QuiescenceYBWC(ctx, node.alpha, node.beta, pos)
 	}
 
@@ -41,17 +44,17 @@ func enterNode(ctx context.Context, pos *PositionNG, node searchNode) (Value, Va
 	return node.alpha, node.beta, false, 0
 }
 
-func probeTT(pos *PositionNG, node searchNode) (MoveNG, MoveNG, int8) {
+func probeTT(pos *PositionNG, node searchNode, depth uint8, pvNode bool) (MoveNG, MoveNG, int8) {
 	var ttMove MoveNG
 	var bestMove MoveNG
 	hashFlag := TT_ALPHA
 
 	if pos.GamePly > 0 {
 		var scoreInt16 int16
-		scoreInt16, ttMove = readHashEntry(pos.St.Top().key, int16(node.alpha), int16(node.beta), &bestMove, node.depth, uint8(pos.GamePly))
+		scoreInt16, ttMove = readHashEntry(pos.St.Top().key, int16(node.alpha), int16(node.beta), &bestMove, depth, uint8(pos.GamePly))
 		score := int32(scoreInt16)
 
-		if score == int32(NO_HASH) || node.pvNode {
+		if score == int32(NO_HASH) || pvNode {
 			return ttMove, bestMove, TT_EXACT
 		}
 	}
@@ -64,31 +67,34 @@ func applyStaticPruning(
 	ctx context.Context,
 	pos *PositionNG,
 	node searchNode,
+	depth uint8,
+	pvNode bool,
+	inCheck bool,
 	doNullMove bool,
 	rootNode bool,
 ) (int, bool, Value) {
 
-	if node.pvNode || node.inCheck {
+	if pvNode || inCheck {
 		return 0, false, 0
 	}
 
 	staticEval := pos.Evaluate()
 
-	if pruned, score := reverseFutilityPruning(staticEval, node.alpha, node.beta, node.depth, rootNode); pruned {
+	if pruned, score := reverseFutilityPruning(staticEval, node.alpha, node.beta, depth, rootNode); pruned {
 		return 0, true, score
 	}
 
 	if doNullMove {
-		if pruned, score := nullMovePruning(ctx, pos, staticEval, node.beta, node.depth); pruned {
+		if pruned, score := nullMovePruning(ctx, pos, staticEval, node.beta, depth); pruned {
 			return 0, true, score
 		}
 	}
 
-	if pruned, score := razoring(ctx, pos, staticEval, node.alpha, node.beta, node.depth); pruned {
+	if pruned, score := razoring(ctx, pos, staticEval, node.alpha, node.beta, depth); pruned {
 		return 0, true, score
 	}
 
-	futility := futilityPruningFlag(staticEval, node.alpha, node.depth)
+	futility := futilityPruningFlag(staticEval, node.alpha, depth)
 
 	return futility, false, 0
 }
@@ -130,7 +136,7 @@ func nullMovePruning(
 	var st StateInfo
 	pos.DoNullMove(&st)
 
-	score := -NegamaxxYBWC(ctx, -beta, -beta+1, pos, depth-3, false)
+	score := -NegamaxYBWC(ctx, pos, searchNode{-beta, -beta + 1}, depth-3, false)
 
 	pos.UndoNullMove()
 
@@ -202,77 +208,104 @@ func futilityPruningFlag(
 	return 0
 }
 
-func initMovePicker(pos *PositionNG, ttMove MoveNG) MovePicker {
+func orderMovesByHeuristics(pos *PositionNG, ttMove MoveNG) MovePicker {
 	var mp MovePicker
 	InitalizeMovePicker(&mp, false, ttMove, pos.Killers[pos.GamePly][0], pos.Killers[pos.GamePly][1], &pos.History)
 	return mp
 }
 
-func searchFirstMove(
+func nextLegalOrderedMove(pos *PositionNG, mp *MovePicker) MoveNG {
+	for move := SelectNextMove(mp, pos); move != MOVE_NONE; move = SelectNextMove(mp, pos) {
+		if pos.Legal(move) {
+			return move
+		}
+	}
+
+	return MOVE_NONE
+}
+
+func updateBestLine(pos *PositionNG, move MoveNG, score Value, depth uint8, result *ybwcResult) {
+	result.hashFlag = TT_EXACT
+	result.bestMove = move
+	result.alpha = score
+
+	StorePvMove(move, pos.GamePly)
+
+	if !pos.Capture(move) {
+		mFrom := FromSQ(move)
+		mTo := ToSQ(move)
+		pos.History[pos.SideToMove][mFrom][mTo] += int32(depth)
+	}
+}
+
+func storeBetaCutoff(pos *PositionNG, move MoveNG, depth uint8, beta Value, bestMove MoveNG) {
+	writeHashEntry(pos.St.Top().key, int16(beta), bestMove, depth, uint8(pos.GamePly), TT_BETA)
+
+	if !pos.Capture(move) {
+		pos.Killers[pos.GamePly][1] = pos.Killers[pos.GamePly][0]
+		pos.Killers[pos.GamePly][0] = move
+	}
+}
+
+// The first ordered child is searched synchronously. Because every descendant
+// repeats this rule, this worker follows the principal variation before the
+// current node is split.
+func searchPrincipalVariation(
 	ctx context.Context,
 	pos *PositionNG,
 	node searchNode,
-	mp MovePicker,
+	depth uint8,
+	mp *MovePicker,
 	bestMove MoveNG,
 	hashFlag int8,
-) (Value, MoveNG, int8, bool) {
+) ybwcResult {
 
-	movesSearched := 0
-
-	for move := SelectNextMove(&mp, pos); move != MOVE_NONE; move = SelectNextMove(&mp, pos) {
-		if !pos.Legal(move) {
-			continue
-		}
-
-		var st StateInfo
-		pos.DoMove(move, &st)
-
-		score := -NegamaxxYBWC(ctx, pos, node, true)
-
-		pos.UndoMove(move)
-		movesSearched++
-
-		if score > node.alpha {
-			hashFlag = TT_EXACT
-			bestMove = move
-			node.alpha = score
-
-			StorePvMove(move, pos.GamePly)
-
-			if !pos.Capture(move) {
-				mFrom := FromSQ(move)
-				mTo := ToSQ(move)
-				pos.History[pos.SideToMove][mFrom][mTo] += int32(node.depth)
-			}
-
-			if node.alpha >= node.beta {
-				writeHashEntry(pos.St.Top().key, int16(node.beta), bestMove, node.depth, uint8(pos.GamePly), TT_BETA)
-
-				if !pos.Capture(move) {
-					pos.Killers[pos.GamePly][1] = pos.Killers[pos.GamePly][0]
-					pos.Killers[pos.GamePly][0] = move
-				}
-
-				return node.beta, bestMove, hashFlag, true
-			}
-		}
-
-		return node.alpha, bestMove, hashFlag, false
+	result := ybwcResult{
+		alpha:     node.alpha,
+		bestMove:  bestMove,
+		hashFlag:  hashFlag,
+		legalMove: false,
 	}
 
-	return node.alpha, bestMove, hashFlag, false
+	move := nextLegalOrderedMove(pos, mp)
+	if move == MOVE_NONE {
+		return result
+	}
+
+	result.legalMove = true
+
+	var st StateInfo
+	pos.DoMove(move, &st)
+
+	score := -NegamaxYBWC(ctx, pos, searchNode{-node.beta, -node.alpha}, depth-1, true)
+
+	pos.UndoMove(move)
+
+	if score > result.alpha {
+		updateBestLine(pos, move, score, depth, &result)
+
+		if result.alpha >= node.beta {
+			storeBetaCutoff(pos, move, depth, node.beta, result.bestMove)
+			result.alpha = node.beta
+			result.cutoff = true
+		}
+	}
+
+	return result
 }
 
+// Once the PV child is fully searched, the rest of this node's ordered children
+// can be searched by independent workers.
 func searchRemainingMovesParallel(
 	ctx context.Context,
 	pos *PositionNG,
 	alpha, beta Value,
 	depth uint8,
-	mp MovePicker,
+	mp *MovePicker,
 	bestMove MoveNG,
-	hashFlag int,
+	hashFlag int8,
 	futilityPruning int,
-) Value {
+) ybwcResult {
 
 	type moveResult struct {
 		move  MoveNG
@@ -281,20 +314,23 @@ func searchRemainingMovesParallel(
 
 	resultCh := make(chan moveResult, 256)
 	var wg sync.WaitGroup
-	var mu sync.Mutex
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	movesSearched := 1
+	result := ybwcResult{
+		alpha:     alpha,
+		bestMove:  bestMove,
+		hashFlag:  hashFlag,
+		legalMove: false,
+	}
 
-	for move := SelectNextMove(&mp, pos); move != MOVE_NONE; move = SelectNextMove(&mp, pos) {
-
-		if !pos.Legal(move) {
-			continue
-		}
+	for move := nextLegalOrderedMove(pos, mp); move != MOVE_NONE; move = nextLegalOrderedMove(pos, mp) {
+		result.legalMove = true
 
 		if futilityPruning > 0 && movesSearched > 0 && !pos.Capture(move) && !pos.GivesCheck(move) {
+			movesSearched++
 			continue
 		}
 
@@ -308,54 +344,53 @@ func searchRemainingMovesParallel(
 
 		wg.Add(1)
 
-		go func(m MoveNG, p *PositionNG) {
+		childNode := searchNode{-beta, -result.alpha}
+
+		go func(m MoveNG, p *PositionNG, child searchNode) {
 			defer wg.Done()
 
-			score := -NegamaxYBWC(ctx, -beta, -alpha, p, depth-1, true)
+			score := -NegamaxYBWC(ctx, p, child, depth-1, true)
 
 			select {
 			case resultCh <- moveResult{m, score}:
 			case <-ctx.Done():
 			}
-		}(move, posCopy)
+		}(move, posCopy, childNode)
 
 		movesSearched++
 	}
 
-	done := make(chan struct{})
 	go func() {
 		wg.Wait()
-		close(done)
+		close(resultCh)
 	}()
 
 	for {
 		select {
-		case res := <-resultCh:
-			mu.Lock()
-			if res.score > alpha {
-				alpha = res.score
-				bestMove = res.move
+		case res, ok := <-resultCh:
+			if !ok {
+				return result
+			}
 
-				StorePvMove(res.move, pos.GamePly)
+			if res.score > result.alpha {
+				updateBestLine(pos, res.move, res.score, depth, &result)
 
-				if alpha >= beta {
+				if result.alpha >= beta {
+					storeBetaCutoff(pos, res.move, depth, beta, result.bestMove)
 					cancel()
-					mu.Unlock()
-					return beta
+					result.alpha = beta
+					result.cutoff = true
+					return result
 				}
 			}
-			mu.Unlock()
-
-		case <-done:
-			return alpha
 
 		case <-ctx.Done():
-			return alpha
+			return result
 		}
 	}
 }
 
-func NegamaxxYBWC(ctx context.Context, pos *PositionNG, node searchNode, doNullMove bool) Value {
+func NegamaxYBWC(ctx context.Context, pos *PositionNG, node searchNode, depth uint8, doNullMove bool) Value {
 	select {
 	case <-ctx.Done():
 		return node.alpha
@@ -365,34 +400,57 @@ func NegamaxxYBWC(ctx context.Context, pos *PositionNG, node searchNode, doNullM
 	PvLength[pos.GamePly] = pos.GamePly
 
 	rootNode := pos.GamePly == 0
+	pvNode := node.alpha != node.beta-1
 
-	node.alpha, node.beta, done, score := enterNode(ctx, pos, node)
+	alpha, beta, done, score := enterNode(ctx, pos, node, depth)
 	if done {
 		return score
 	}
 
+	node.alpha = alpha
+	node.beta = beta
+
 	inCheck := pos.Checkers().IsNotZero()
 	if inCheck {
-		node.depth++
+		depth++
 	}
 
-	futilityPruning, pruned, score := applyStaticPruning(ctx, pos, node, doNullMove, rootNode)
+	futilityPruning, pruned, score := applyStaticPruning(ctx, pos, node, depth, pvNode, inCheck, doNullMove, rootNode)
 	if pruned {
 		return score
 	}
 
-	ttMove, bestMove, hashFlag := probeTT(pos, node)
+	ttMove, bestMove, hashFlag := probeTT(pos, node, depth, pvNode)
 
-	mp := initMovePicker(pos, ttMove)
+	mp := orderMovesByHeuristics(pos, ttMove)
 
-	node.alpha, bestMove, hashFlag, cutoff := searchFirstMove(ctx, pos, node, mp, bestMove, hashFlag)
-	if cutoff {
-		return alpha
+	result := searchPrincipalVariation(ctx, pos, node, depth, &mp, bestMove, hashFlag)
+	if result.cutoff {
+		return result.alpha
 	}
 
-	alpha = searchRemainingMovesParallel(ctx, pos, alpha, beta, depth, mp, bestMove, hashFlag, futilityPruning)
+	node.alpha = result.alpha
+	bestMove = result.bestMove
+	hashFlag = result.hashFlag
 
-	writeHashEntry(pos.St.Top().key, int16(alpha), bestMove, depth, uint8(pos.GamePly), hashFlag)
+	siblingResult := searchRemainingMovesParallel(ctx, pos, node.alpha, node.beta, depth, &mp, bestMove, hashFlag, futilityPruning)
+	if siblingResult.cutoff {
+		return siblingResult.alpha
+	}
 
-	return alpha
+	if siblingResult.legalMove {
+		result.legalMove = true
+	}
+
+	node.alpha = siblingResult.alpha
+	bestMove = siblingResult.bestMove
+	hashFlag = siblingResult.hashFlag
+
+	if !result.legalMove {
+		return -int32(MATE_VALUE) + int32(pos.GamePly)
+	}
+
+	writeHashEntry(pos.St.Top().key, int16(node.alpha), bestMove, depth, uint8(pos.GamePly), hashFlag)
+
+	return node.alpha
 }
