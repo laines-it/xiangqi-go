@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"math/rand"
 	"testing"
 	"time"
 )
@@ -13,9 +12,8 @@ var sequentialSearchBenchmarkScoreSink Value
 var sequentialSearchBenchmarkMoveSink MoveNG
 
 const (
-	sequentialSearchBenchmarkMoves          = 5
-	sequentialSearchBenchmarkRandomPlies    = 10
-	sequentialSearchBenchmarkRandomSeedBase = 1070372
+	sequentialSearchBenchmarkMoves = 5
+	sequentialSearchBenchmarkFEN   = "1C2ka3/9/C1Nab1n2/p3p3p/6p2/9/P3P3P/3AB4/3p2c2/c1BAK4 w - - 0 1"
 )
 
 var sequentialSearchBenchmarkDepths = []uint8{6, 8, 10}
@@ -101,17 +99,39 @@ func BenchmarkSequentialSearchMoves(b *testing.B) {
 	}
 }
 
+func BenchmarkSearchAccuracyFixedFEN(b *testing.B) {
+	for _, depth := range sequentialSearchBenchmarkDepths {
+		b.Run("depth_"+itoaBenchmark(int(depth)), func(b *testing.B) {
+			b.Run("YBWC", func(b *testing.B) {
+				benchmarkSearchAccuracyFixedFEN(b, depth, func(pos *PositionNG) (MoveNG, Value) {
+					return pos.SearchPositionYBWC(depth)
+				})
+			})
+			b.Run("LazySMP", func(b *testing.B) {
+				for _, threads := range sequentialSearchBenchmarkLazySMPThreads {
+					threads := threads
+					b.Run("threads_"+itoaBenchmark(threads), func(b *testing.B) {
+						benchmarkSearchAccuracyFixedFEN(b, depth, func(pos *PositionNG) (MoveNG, Value) {
+							return pos.SearchPositionLazySMP(depth, threads)
+						})
+					})
+				}
+			})
+		})
+	}
+}
+
 func benchmarkSequentialSearchMoves(b *testing.B, depth uint8, search func(*PositionNG) (MoveNG, Value)) {
 	b.Helper()
 	b.ReportAllocs()
 	b.StopTimer()
 
-	rng := rand.New(rand.NewSource(sequentialSearchBenchmarkRandomSeedBase + int64(depth)))
 	var totalSearchNanos int64
 	var searchedMoves int
 
 	for i := 0; i < b.N; i++ {
-		pos := generateBenchmarkRandomPosition(b, rng)
+		var pos PositionNG
+		pos.Set(sequentialSearchBenchmarkFEN)
 		TTClear()
 		MHTClear()
 
@@ -130,24 +150,40 @@ func benchmarkSequentialSearchMoves(b *testing.B, depth uint8, search func(*Posi
 	}
 }
 
-func generateBenchmarkRandomPosition(b *testing.B, rng *rand.Rand) PositionNG {
+func benchmarkSearchAccuracyFixedFEN(b *testing.B, depth uint8, search func(*PositionNG) (MoveNG, Value)) {
 	b.Helper()
+	b.ReportAllocs()
 
-	var pos PositionNG
-	pos.Set(initialFen)
+	success := 0
+	expectedMove, expectedScore := benchmarkAlphaBetaExpected(depth)
+	for i := 0; i < b.N; i++ {
 
-	moves := make([]MoveNG, MAX_MOVES)
-	for range sequentialSearchBenchmarkRandomPlies {
-		size := pos.GenerateLEGAL(moves)
-		if size == 0 {
-			break
+		foundMove, foundScore := benchmarkSearchResult(depth, search)
+
+		if foundMove == expectedMove || foundScore == expectedScore {
+			success++
 		}
-
-		var st StateInfo
-		pos.DoMove(moves[rng.Intn(int(size))], &st)
 	}
 
-	return pos
+	if b.N > 0 {
+		b.ReportMetric(float64(success)/float64(b.N)*100, "accuracy_percent")
+	}
+}
+
+func benchmarkAlphaBetaExpected(depth uint8) (MoveNG, Value) {
+	var pos PositionNG
+	pos.Set(sequentialSearchBenchmarkFEN)
+	TTClear()
+	MHTClear()
+	return pos.SearchPosition_ab(depth)
+}
+
+func benchmarkSearchResult(depth uint8, search func(*PositionNG) (MoveNG, Value)) (MoveNG, Value) {
+	var pos PositionNG
+	pos.Set(sequentialSearchBenchmarkFEN)
+	TTClear()
+	MHTClear()
+	return search(&pos)
 }
 
 func runSequentialSearchBenchmarkMoves(b *testing.B, pos *PositionNG, search func(*PositionNG) (MoveNG, Value)) int {

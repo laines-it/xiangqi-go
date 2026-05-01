@@ -64,21 +64,23 @@ func test(name string, getBestMoveFunc func(i int, pos *engine.PositionNG, depth
 }
 
 func main() {
-	test := true
+	test := false
 	if test {
 		test_speed()
 		return
 	}
 	var pos engine.PositionNG
-	initialFen := "rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w - - 0 1"
-	pos.Set(initialFen)
+	//initialFen := "rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w - - 0 1"
+	fen := "1C2ka3/9/C1Nab1n2/p3p3p/6p2/9/P3P3P/3AB4/3p2c2/c1BAK4 w - - 0 1"
+	pos.Set(fen)
+	fmt.Println(pos.String(true))
 	// // Magic example
 	// emptyFen := "4k4/7H1/9/1H7/9/9/1r2H4/9/9/3K5 w - - 0 1"
 	// pos.Set(emptyFen)
 	// fmt.Println(pos.String(light))
 
 	// Match example
-	startMatch("Lazy", GetBestMoveLazy4, 6, "Alpha-Beta", GetBestMoveAb, 6)
+	// startMatch("YBWC", GetBestMoveYBWC, 6, "Alpha-Beta", GetBestMoveAb, 6)
 
 	// Accuracy example
 	// name := "YBWC"
