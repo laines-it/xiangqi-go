@@ -3,14 +3,12 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
+	"math/rand"
 	"os"
-	"runtime/debug"
 	"time"
 
 	"github.com/hmgle/godogpaw/engine"
-	"github.com/sirupsen/logrus"
 )
 
 type CallResult struct {
@@ -36,7 +34,7 @@ func test(name string, getBestMoveFunc func(i int, pos *engine.PositionNG, depth
 
 	for i := range n {
 		start := time.Now()
-		getBestMoveFunc(i, pos, depth)
+		score := getBestMoveFunc(i, pos, depth)
 		duration := time.Since(start)
 
 		results = append(results, CallResult{
@@ -49,7 +47,7 @@ func test(name string, getBestMoveFunc func(i int, pos *engine.PositionNG, depth
 
 		cumulative[i] = totalDuration.Seconds()
 
-		fmt.Printf("Ход %d: %v\n", i+1, duration)
+		fmt.Printf("Ход %d: %v\n (score: %d)", i+1, duration, score)
 	}
 
 	avgDuration := totalDuration / time.Duration(n)
@@ -66,67 +64,180 @@ func test(name string, getBestMoveFunc func(i int, pos *engine.PositionNG, depth
 }
 
 func main() {
+	test := true
+	if test {
+		test_speed()
+		return
+	}
+	var pos engine.PositionNG
+	initialFen := "rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w - - 0 1"
+	pos.Set(initialFen)
+	// // Magic example
+	// emptyFen := "4k4/7H1/9/1H7/9/9/1r2H4/9/9/3K5 w - - 0 1"
+	// pos.Set(emptyFen)
+	// fmt.Println(pos.String(light))
+
+	// Match example
+	startMatch("Lazy", GetBestMoveLazy4, 6, "Alpha-Beta", GetBestMoveAb, 6)
+
+	// Accuracy example
+	// name := "YBWC"
+	// accuracy := checkAccuracy(name, 2)
+	// fmt.Printf("Точность %s, depth 2: %.2f\n", name, accuracy)
+	// accuracy = checkAccuracy(name, 7)
+	// fmt.Printf("Точность %s, depth 7: %.2f\n", name, accuracy)
+	// accuracy = checkAccuracy(name, 8)
+	// fmt.Printf("Точность %s, depth 8: %.2f\n", name, accuracy)
+}
+
+func generateRandomPosition() engine.PositionNG {
+	var pos engine.PositionNG
+	pos.Set("rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w - - 0 1")
+	moves := make([]engine.MoveNG, engine.MAX_MOVES)
+	for range 10 {
+		size := pos.GenerateLEGAL(moves)
+		if size == 0 {
+			break
+		}
+		randomMove := moves[rand.Intn(len(moves[:size]))]
+		var st engine.StateInfo
+		pos.DoMove(randomMove, &st)
+	}
+	return pos
+}
+
+func checkAccuracy(name string, depth int) float64 {
+	n := 20
+	success := 0
+	for range n {
+		pos := generateRandomPosition()
+
+		expectedMove, expectedScore := pos.SearchPosition_ab(uint8(depth))
+		var foundMove engine.MoveNG
+		var foundScore engine.Value
+		switch name {
+		case "Lazy":
+			foundMove, foundScore = pos.SearchPositionLazySMP(uint8(depth), 0)
+		case "YBWC":
+			foundMove, foundScore = pos.SearchPositionYBWC(uint8(depth))
+		case "Alpha-Beta":
+			foundMove, foundScore = pos.SearchPosition_ab(uint8(depth))
+		default:
+			log.Fatalf("Unknown search method: %s", name)
+			return 0
+		}
+		if foundMove == expectedMove {
+			success++
+			fmt.Println("found success")
+		} else {
+			if foundScore != expectedScore {
+				fmt.Printf("found failure, expected score: %d, found score: %d\n", expectedScore, foundScore)
+			} else {
+				success++
+				fmt.Printf("found inaccuracy, expected: %s, found: %s\n", pos.MoveStr(expectedMove), pos.MoveStr(foundMove))
+			}
+		}
+	}
+	return float64(success) / float64(n)
+}
+
+func startMatch(name1 string, engine1 func(i int, pos *engine.PositionNG, depth int) engine.Value, depth1 int,
+	name2 string, engine2 func(i int, pos *engine.PositionNG, depth int) engine.Value, depth2 int) {
 	initialFen := "rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w - - 0 1"
 	var pos engine.PositionNG
 	pos.Set(initialFen)
 
 	value := engine.VALUE_DRAW
-	// Parallel vs Alpha-Beta
 	i := 0
-	for -engine.VALUE_MATE < value && value < engine.VALUE_MATE {
-		scorePar := GetBestMovePar(i, &pos, 4)
-		fmt.Printf("Parallel Search Score: %d\n", scorePar)
-		fmt.Println(pos.String())
-		scoreAb := GetBestMoveAb(i, &pos, 4)
-		fmt.Printf("Alpha-Beta Search Score: %d\n", scoreAb)
-		fmt.Println(pos.String())
-		value = pos.Evaluate()
-		i++
+
+	result := 0
+	gameNumber := 1
+
+	for gameNumber < 5 {
+		for !isFinished(value) {
+			if i > int(engine.MAX_MOVES) {
+				fmt.Println("Превышено максимальное количество ходов.")
+				break
+			}
+			if i%2 == 0 {
+				value = engine1(i, &pos, depth1)
+				fmt.Printf("Engine %s Score: %d\n", name1, value)
+			} else {
+				value = engine2(i, &pos, depth2)
+				fmt.Printf("Engine %s Score: %d\n", name2, value)
+			}
+			fmt.Println(pos.String(true))
+			i++
+		}
+		if value >= 0 {
+			result += 1
+		} else {
+			result -= 1
+		}
+		if result > 0 {
+			fmt.Printf("Game %d: Победитель: %s\n", gameNumber, name1)
+		} else if result < 0 {
+			fmt.Printf("Game %d: Победитель: %s\n", gameNumber, name2)
+		} else {
+			fmt.Printf("Game %d: Ничья\n", gameNumber)
+		}
+		gameNumber++
+		pos.Set(initialFen)
+		value = engine.VALUE_DRAW
+		i = 0
 	}
-	fmt.Println(pos.String())
-	if value > 0 {
-		fmt.Println("Победа Parallel!")
-	} else if value < 0 {
-		fmt.Println("Победа Alpha-Beta!")
+	if result > 0 {
+		fmt.Printf("Матч завершён. Победитель: %s\n", name1)
+	} else if result < 0 {
+		fmt.Printf("Матч завершён. Победитель: %s\n", name2)
 	} else {
-		fmt.Println("Ничья!")
+		fmt.Printf("Матч завершён. Ничья\n")
 	}
 }
 
+func isFinished(value engine.Value) bool {
+	return value <= -engine.VALUE_KNOWN_WIN+1 ||
+		value >= engine.VALUE_KNOWN_WIN-1
+}
+
 func test_speed() {
-	initialFen := "rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w - - 0 1"
-	var pos engine.PositionNG
-	pos.Set(initialFen)
+	pos := generateRandomPosition()
+	fmt.Println("Исходная позиция:")
+	fmt.Println(pos.String(true))
 
-	for i := range 10 {
-		GetBestMove(i, &pos, 2)
-	}
-
-	n := 10
+	n := 4
 
 	newPos := pos
 	depth := 4
-	par4 := test("Parallel", GetBestMovePar, &newPos, depth, n)
+	fmt.Println("Alpha-beta, Тестирование на глубине", depth)
+	par4 := test("Alpha-Beta", GetBestMoveAb, &newPos, depth, n)
 	newPos = pos
-	ab4 := test("Alpha-Beta", GetBestMoveAb, &newPos, depth, n)
+	fmt.Println("Lazy, Тестирование на глубине", depth)
+	ab4 := test("Lazy 5", GetBestMoveLazy5, &newPos, depth, n)
 
 	newPos = pos
 	depth = 6
-	par6 := test("Parallel", GetBestMovePar, &newPos, depth, n)
+	fmt.Println("Alpha-beta, Тестирование на глубине", depth)
+	par6 := test("Alpha-Beta", GetBestMoveAb, &newPos, depth, n)
 	newPos = pos
-	ab6 := test("Alpha-Beta", GetBestMoveAb, &newPos, depth, n)
+	fmt.Println("Lazy, Тестирование на глубине", depth)
+	ab6 := test("Lazy 5", GetBestMoveLazy5, &newPos, depth, n)
 
 	newPos = pos
 	depth = 8
-	par8 := test("Parallel", GetBestMovePar, &newPos, depth, n)
+	fmt.Println("Alpha-beta, Тестирование на глубине", depth)
+	par8 := test("Alpha-Beta", GetBestMoveAb, &newPos, depth, n)
 	newPos = pos
-	ab8 := test("Alpha-Beta", GetBestMoveAb, &newPos, depth, n)
+	fmt.Println("Lazy, Тестирование на глубине", depth)
+	ab8 := test("Lazy 5", GetBestMoveLazy5, &newPos, depth, n)
 
 	newPos = pos
 	depth = 10
-	par10 := test("Parallel", GetBestMovePar, &newPos, depth, n)
+	fmt.Println("Alpha-beta, Тестирование на глубине", depth)
+	par10 := test("Alpha-Beta", GetBestMoveAb, &newPos, depth, n)
 	newPos = pos
-	ab10 := test("Alpha-Beta", GetBestMoveAb, &newPos, depth, n)
+	fmt.Println("Lazy, Тестирование на глубине", depth)
+	ab10 := test("Lazy 5", GetBestMoveLazy5, &newPos, depth, n)
 
 	allData := struct {
 		Functions []FunctionResults `json:"functions"`
@@ -159,6 +270,33 @@ func GetBestMove(i int, pos *engine.PositionNG, depth int) {
 	pos.DoMove(mv, &state)
 }
 
+func GetBestMoveLazyMAXPROCS(i int, pos *engine.PositionNG, depth int) engine.Value {
+	var state engine.StateInfo
+	d := uint8(depth)
+	mv, score := pos.SearchPositionLazySMP(d, 0)
+	fmt.Println(i, pos.MoveStr(mv))
+	pos.DoMove(mv, &state)
+	return score
+}
+
+func GetBestMoveLazy4(i int, pos *engine.PositionNG, depth int) engine.Value {
+	var state engine.StateInfo
+	d := uint8(depth)
+	mv, score := pos.SearchPositionLazySMP(d, 4)
+	fmt.Println(i, pos.MoveStr(mv))
+	pos.DoMove(mv, &state)
+	return score
+}
+
+func GetBestMoveLazy5(i int, pos *engine.PositionNG, depth int) engine.Value {
+	var state engine.StateInfo
+	d := uint8(depth)
+	mv, score := pos.SearchPositionLazySMP(d, 5)
+	fmt.Println(i, pos.MoveStr(mv))
+	pos.DoMove(mv, &state)
+	return score
+}
+
 func GetBestMoveAb(i int, pos *engine.PositionNG, depth int) engine.Value {
 	var state engine.StateInfo
 	d := uint8(depth)
@@ -174,30 +312,15 @@ func GetBestMovePar(i int, pos *engine.PositionNG, depth int) engine.Value {
 	mv, score := pos.ParallelSearch(d)
 	fmt.Println(i, pos.MoveStr(mv))
 	pos.DoMove(mv, &state)
+	fmt.Println(pos.String(true))
 	return score
 }
 
-func init() {
-	log.SetFlags(log.Flags() | log.Lshortfile)
-
-	logPath := "/tmp/godogpaw-ucci.log"
-	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		log.Fatalf("open log file: %v", err)
-	}
-
-	mw := io.MultiWriter(os.Stderr, f)
-	logrus.SetOutput(mw)
-	log.SetOutput(mw)
-	logrus.SetLevel(logrus.DebugLevel)
-}
-
-func logPanic() {
-	if r := recover(); r != nil {
-		logrus.WithFields(logrus.Fields{
-			"panic": r,
-			"stack": string(debug.Stack()),
-		}).Error("engine panic")
-		panic(r)
-	}
+func GetBestMoveYBWC(i int, pos *engine.PositionNG, depth int) engine.Value {
+	var state engine.StateInfo
+	d := uint8(depth)
+	mv, score := pos.SearchPositionYBWC(d)
+	fmt.Println(i, pos.MoveStr(mv))
+	pos.DoMove(mv, &state)
+	return score
 }

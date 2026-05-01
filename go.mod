@@ -1,6 +1,6 @@
 module github.com/hmgle/godogpaw
 
-go 1.22
+go 1.25
 
 require github.com/sirupsen/logrus v1.8.3
 

@@ -2,7 +2,32 @@ package engine
 
 import "sync"
 
-func Negamax(depth uint8, pos *PositionNG) (bestScore Value) {
+func negamax(depth uint8, pos *PositionNG, move MoveNG, currentBestScore Value, ordered bool) (bestMove MoveNG, bestScore Value) {
+	bestMove = MOVE_NONE
+	bestScore = currentBestScore
+
+	var st StateInfo
+	pos.DoMove(move, &st)
+	score := -Negamax(depth-1, pos, ordered)
+	pos.UndoMove(move)
+
+	if score > currentBestScore {
+		bestScore = score
+		bestMove = move
+		StorePvMove(move, pos.GamePly)
+
+		// store history moves
+		if !pos.Capture(move) {
+			mFrom := FromSQ(move)
+			mTo := ToSQ(move)
+			pos.History[pos.SideToMove][mFrom][mTo] += int32(depth)
+		}
+	}
+
+	return bestMove, bestScore
+}
+
+func Negamax(depth uint8, pos *PositionNG, ordered bool) (bestScore Value) {
 	PvLength[pos.GamePly] = pos.GamePly
 
 	if pos.IsDraw() {
@@ -12,7 +37,7 @@ func Negamax(depth uint8, pos *PositionNG) (bestScore Value) {
 	var bestMove MoveNG
 	if pos.GamePly > 0 {
 		var scoreInt16 int16
-		scoreInt16, _ = readHashEntry(pos.St.Top().key, 0, 0, &bestMove, depth, uint8(pos.GamePly))
+		scoreInt16, _ = readHashEntry(pos.St.Top().key, pos.St.Top().key2, 0, 0, &bestMove, depth, uint8(pos.GamePly))
 		if scoreInt16 != int16(NO_HASH) {
 			return int32(scoreInt16)
 		}
@@ -23,7 +48,7 @@ func Negamax(depth uint8, pos *PositionNG) (bestScore Value) {
 	}
 
 	if depth == 0 {
-		return Quiescence(pos)
+		return Quiescence(pos, ordered)
 	}
 
 	inCheck := pos.Checkers().IsNotZero()
@@ -35,30 +60,41 @@ func Negamax(depth uint8, pos *PositionNG) (bestScore Value) {
 	var legalMoves int
 
 	// loop over moves
-	var mp MovePicker
-	InitalizeMovePicker(&mp, false, MOVE_NONE, MOVE_NONE, MOVE_NONE, &pos.History)
-
-	for currentMove := SelectNextMove(&mp, pos); currentMove != MOVE_NONE; currentMove = SelectNextMove(&mp, pos) {
-		if !pos.Legal(currentMove) {
-			continue
+	if ordered {
+		mp := orderMovesByHeuristics(pos, bestMove)
+		for currentMove := nextLegalOrderedMove(pos, &mp); currentMove != MOVE_NONE; currentMove = nextLegalOrderedMove(pos, &mp) {
+			legalMoves++
+			move, score := negamax(depth, pos, currentMove, bestScore, ordered)
+			if score > bestScore {
+				bestMove = move
+				bestScore = score
+			}
 		}
-		legalMoves++
+	} else {
+		var moves [MAX_MOVES]MoveNG
+		size := pos.GenerateLEGAL(moves[:])
+		for _, currentMove := range moves[:size] {
+			if !pos.Legal(currentMove) {
+				continue
+			}
 
-		var st StateInfo
-		pos.DoMove(currentMove, &st)
-		score := -Negamax(depth-1, pos)
-		pos.UndoMove(currentMove)
+			legalMoves++
 
-		if score > bestScore {
-			bestScore = score
-			bestMove = currentMove
-			StorePvMove(currentMove, pos.GamePly)
+			var st StateInfo
+			pos.DoMove(currentMove, &st)
+			score := -Negamax(depth-1, pos, false)
+			pos.UndoMove(currentMove)
 
-			// store history moves
-			if !pos.Capture(currentMove) {
-				mFrom := FromSQ(currentMove)
-				mTo := ToSQ(currentMove)
-				pos.History[pos.SideToMove][mFrom][mTo] += int32(depth)
+			if score > bestScore {
+				bestScore = score
+				bestMove = currentMove
+				StorePvMove(currentMove, pos.GamePly)
+				// store history moves
+				if !pos.Capture(currentMove) {
+					mFrom := FromSQ(currentMove)
+					mTo := ToSQ(currentMove)
+					pos.History[pos.SideToMove][mFrom][mTo] += int32(depth)
+				}
 			}
 		}
 	}
@@ -72,12 +108,12 @@ func Negamax(depth uint8, pos *PositionNG) (bestScore Value) {
 	}
 
 	// store hash entry
-	writeHashEntry(pos.St.Top().key, int16(bestScore), bestMove, depth, uint8(pos.GamePly), TT_EXACT)
+	writeHashEntry(pos.St.Top().key, pos.St.Top().key2, int16(bestScore), bestMove, depth, uint8(pos.GamePly), TT_EXACT)
 
 	return bestScore
 }
 
-func Quiescence(pos *PositionNG) (bestScore Value) {
+func Quiescence(pos *PositionNG, ordered bool) (bestScore Value) {
 	PvLength[pos.GamePly] = pos.GamePly
 
 	evalation := pos.Evaluate()
@@ -87,20 +123,15 @@ func Quiescence(pos *PositionNG) (bestScore Value) {
 
 	bestScore = evalation
 
-	var mp MovePicker
-	InitalizeMovePicker(&mp, true, MOVE_NONE, MOVE_NONE, MOVE_NONE, &pos.History)
-
-	for currentMove := SelectNextMove(&mp, pos); currentMove != MOVE_NONE; currentMove = SelectNextMove(&mp, pos) {
-		if !pos.Legal(currentMove) {
-			continue
-		}
+	mp := orderNoisyMovesByHeuristics(pos)
+	for currentMove := nextLegalOrderedMove(pos, &mp); currentMove != MOVE_NONE; currentMove = nextLegalOrderedMove(pos, &mp) {
 		if !pos.Capture(currentMove) {
 			continue
 		}
 
 		var st StateInfo
 		pos.DoMove(currentMove, &st)
-		score := -Quiescence(pos)
+		score := -Quiescence(pos, ordered)
 		pos.UndoMove(currentMove)
 
 		if score > bestScore {
@@ -127,13 +158,8 @@ func (pos *PositionNG) ParallelSearch(depth uint8) (bestMove MoveNG, bestScore V
 	bestScore = -int32(MATE_VALUE)
 	results := make([]SearchResult, 0)
 
-	var mp MovePicker
-	InitalizeMovePicker(&mp, false, MOVE_NONE, MOVE_NONE, MOVE_NONE, &pos.History)
-
-	for currentMove := SelectNextMove(&mp, pos); currentMove != MOVE_NONE; currentMove = SelectNextMove(&mp, pos) {
-		if !pos.Legal(currentMove) {
-			continue
-		}
+	mp := orderMovesByHistory(pos)
+	for currentMove := nextLegalOrderedMove(pos, &mp); currentMove != MOVE_NONE; currentMove = nextLegalOrderedMove(pos, &mp) {
 
 		wg.Add(1)
 		go func(move MoveNG) {

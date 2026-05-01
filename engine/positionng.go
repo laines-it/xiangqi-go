@@ -24,8 +24,11 @@ const (
 type Key = uint64
 
 type Zobrist struct {
-	psq  [PIECE_NB][SQUARE_NB]Key
-	side Key
+	psq   [PIECE_NB][SQUARE_NB]Key
+	psq2  [PIECE_NB][SQUARE_NB]Key
+	minor [PIECE_NB][SQUARE_NB]Key
+	side  Key
+	side2 Key
 }
 
 var zkey Zobrist
@@ -36,9 +39,12 @@ func init() {
 	for pc := 0; pc < PIECE_NB; pc++ {
 		for s := SQ_A0; s <= SQ_I9; s++ {
 			zkey.psq[pc][s] = r.Uint64()
+			zkey.psq2[pc][s] = r.Uint64()
+			zkey.minor[pc][s] = r.Uint64()
 		}
 	}
 	zkey.side = r.Uint64()
+	zkey.side2 = r.Uint64()
 	log.Printf("zkey init cast time: %v\n", time.Since(now))
 }
 
@@ -54,6 +60,8 @@ type StateInfo struct {
 
 	// Not copied when making a move (will be recomputed anyhow)
 	key             Key
+	key2            Key
+	minorKey        Key
 	checkersBB      Bitboard
 	blockersForKing [COLOR_NB]Bitboard
 	pinners         [COLOR_NB]Bitboard
@@ -98,6 +106,8 @@ type PositionNG struct {
 	History HistoryTable
 	Evals   [MAX_MOVES]Value
 	Killers [MAX_MOVES][2]MoveNG
+
+	searchStates [MAX_PLY]StateInfo
 }
 
 func (p *PositionNG) PieceOn(s Square) Piece {
@@ -612,6 +622,8 @@ func (pos *PositionNG) doMove(m MoveNG, newSt *StateInfo, givesCheck bool) {
 	pos.Filter.Incr(st.key)
 
 	k := st.key ^ zkey.side
+	k2 := st.key2 ^ zkey.side2
+	minorKey := st.minorKey
 	newSt.Material = st.Material
 	newSt.Check10 = st.Check10
 	newSt.Rule60 = st.Rule60
@@ -653,6 +665,10 @@ func (pos *PositionNG) doMove(m MoveNG, newSt *StateInfo, givesCheck bool) {
 
 		// Update hash key
 		k ^= zkey.psq[captured][capsq]
+		k2 ^= zkey.psq2[captured][capsq]
+		if isMinorPieceType(TypeOf(captured)) {
+			minorKey ^= zkey.minor[captured][capsq]
+		}
 
 		// Reset rule 60 counter
 		st.Rule60 = 0
@@ -661,6 +677,10 @@ func (pos *PositionNG) doMove(m MoveNG, newSt *StateInfo, givesCheck bool) {
 	}
 	// Update hash key
 	k ^= zkey.psq[pc][from] ^ zkey.psq[pc][to]
+	k2 ^= zkey.psq2[pc][from] ^ zkey.psq2[pc][to]
+	if isMinorPieceType(TypeOf(pc)) {
+		minorKey ^= zkey.minor[pc][from] ^ zkey.minor[pc][to]
+	}
 
 	pos.MovePiece(from, to)
 
@@ -669,6 +689,8 @@ func (pos *PositionNG) doMove(m MoveNG, newSt *StateInfo, givesCheck bool) {
 
 	// Update the key with the final value
 	st.key = k
+	st.key2 = k2
+	st.minorKey = minorKey
 
 	// Calculate checkers bitboard (if move gives check)
 	if givesCheck {
@@ -730,6 +752,8 @@ func (pos *PositionNG) DoNullMove(newSt *StateInfo) {
 	newSt.Check10 = st.Check10
 	newSt.Rule60 = st.Rule60
 	newSt.key = st.key
+	newSt.key2 = st.key2
+	newSt.minorKey = st.minorKey
 	newSt.checkersBB = st.checkersBB
 	newSt.blockersForKing = st.blockersForKing
 	newSt.pinners = st.pinners
@@ -741,6 +765,7 @@ func (pos *PositionNG) DoNullMove(newSt *StateInfo) {
 	pos.St.Push(newSt)
 	st = newSt
 	st.key ^= zkey.side
+	st.key2 ^= zkey.side2
 	st.Rule60++
 	st.PliesFromNull = 0
 	pos.SideToMove = notColor(pos.SideToMove)
@@ -860,6 +885,8 @@ func (pos *PositionNG) SetCheckInfo() {
 func (pos *PositionNG) SetState() {
 	st := pos.St.Top()
 	st.key = 0
+	st.key2 = 0
+	st.minorKey = 0
 	st.Material[WHITE] = VALUE_ZERO
 	st.Material[BLACK] = VALUE_ZERO
 	st.checkersBB = pos.CheckersTo2(notColor(pos.SideToMove), pos.Square(KING, pos.SideToMove))
@@ -871,12 +898,17 @@ func (pos *PositionNG) SetState() {
 		s := PopLsb(&b)
 		pc := pos.PieceOn(s)
 		st.key ^= zkey.psq[pc][s]
+		st.key2 ^= zkey.psq2[pc][s]
+		if isMinorPieceType(TypeOf(pc)) {
+			st.minorKey ^= zkey.minor[pc][s]
+		}
 		if TypeOf(pc) != KING {
 			st.Material[ColorOf(pc)] += PieceValue[MG][pc]
 		}
 	}
 	if pos.SideToMove == BLACK {
 		st.key ^= zkey.side
+		st.key2 ^= zkey.side2
 	}
 }
 
@@ -1001,7 +1033,7 @@ func (pos *PositionNG) IsRepetition() bool {
 	for i := 0; i < 3; i++ {
 		st1 := pos.St.PrevCnt(i)
 		st2 := pos.St.PrevCnt(i + 2)
-		if st1.key != st2.key {
+		if st1.key != st2.key || st1.key2 != st2.key2 {
 			return false
 		}
 	}
@@ -1134,10 +1166,10 @@ func (pos *PositionNG) RuleJudge(result *Value, ply int) bool {
 			checkThem = checkThem.And(stp.checkersBB)
 			// Return a score if a position repeats once earlier but strictly
 			// after the root, or repeats twice before or at the root.
-			if stp.key == st.key {
+			if stp.key == st.key && stp.key2 == st.key2 {
 				cnt++
 			}
-			if stp.key == st.key && (cnt == 2 || ply > i) {
+			if stp.key == st.key && stp.key2 == st.key2 && (cnt == 2 || ply > i) {
 				if checkThem == (Bitboard{}) && checkUs == (Bitboard{}) {
 					//                     // Copy the current position to a rollback struct, so we don't need to do those moves again
 				}
@@ -1332,7 +1364,7 @@ func Move2Str(m MoveNG) string {
 	return squareStr(from) + squareStr(to)
 }
 
-func (pos *PositionNG) String() string {
+func (pos *PositionNG) String(light bool) string {
 	b := pos.PiecesAllColor(ALL_PIECES)
 
 	s := "\n  ╔"
@@ -1358,7 +1390,12 @@ func (pos *PositionNG) String() string {
 			}
 			if b.And(SquareBB[MakeSquareNG(f, r)]).IsNotZero() {
 				pc := pos.Board[MakeSquareNG(f, r)]
-				pcStr := pieceEuropean(pc)
+				var pcStr string
+				if light {
+					pcStr = pieceEuropeanLight(pc)
+				} else {
+					pcStr = pieceEuropeanDark(pc)
+				}
 				s += fmt.Sprintf(" %s ", pcStr)
 			} else {
 				if f > FILE_A {
@@ -1374,18 +1411,20 @@ func (pos *PositionNG) String() string {
 				}
 			}
 		}
-		s += "║ " + string('0'+rune(r)) + "\n"
+		s += "║ " + fmt.Sprintf("%d", r) + "\n"
 	}
 	s += "  ╚"
 	for range 9 {
 		s += "═══"
 	}
 	s += "╝\n"
-	s += "    1  2  3  4  5  6  7  8  9\n"
+	s += "    a  b  c  d  e  f  g  h  i\n"
 	return s
 }
 
-func pieceEuropean(pt Piece) string {
+// use for dark background
+func pieceEuropeanDark(pt Piece) string {
+	//RED and GREEN
 	switch pt {
 	case W_ROOK:
 		return "\033[31mR\033[0m"
@@ -1416,6 +1455,43 @@ func pieceEuropean(pt Piece) string {
 		return "\033[32mE\033[0m"
 	case B_KING:
 		return "\033[32mK\033[0m"
+	}
+	return "NULL"
+}
+
+// use for light background
+func pieceEuropeanLight(pt Piece) string {
+	//RED and BLACK
+	switch pt {
+	case W_ROOK:
+		return "\033[31mR\033[0m"
+	case W_ADVISOR:
+		return "\033[31mA\033[0m"
+	case W_CANNON:
+		return "\033[31mC\033[0m"
+	case W_PAWN:
+		return "\033[31mP\033[0m"
+	case W_KNIGHT:
+		return "\033[31mN\033[0m"
+	case W_BISHOP:
+		return "\033[31mE\033[0m"
+	case W_KING:
+		return "\033[31mK\033[0m"
+
+	case B_ROOK:
+		return "\033[30mR\033[0m"
+	case B_ADVISOR:
+		return "\033[30mA\033[0m"
+	case B_CANNON:
+		return "\033[30mC\033[0m"
+	case B_PAWN:
+		return "\033[30mP\033[0m"
+	case B_KNIGHT:
+		return "\033[30mN\033[0m"
+	case B_BISHOP:
+		return "\033[30mE\033[0m"
+	case B_KING:
+		return "\033[30mK\033[0m"
 	}
 	return "NULL"
 }

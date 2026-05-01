@@ -106,35 +106,9 @@ var pieceSquareTable = [PIECE_TYPE_NB][SQUARE_NB]Value{
 }
 
 func (pos *PositionNG) Evaluate() Value {
-	var whiteScore Value
-	var blackScore Value
-
-	for sq := Square(0); sq < SQUARE_NB; sq++ {
-		piece := pos.Board[sq]
-		if piece == NO_PIECE {
-			continue
-		}
-
-		pt := TypeOf(piece)
-		if pt <= NO_PIECE_TYPE || pt >= PIECE_TYPE_NB {
-			continue
-		}
-
-		color := ColorOf(piece)
-		idx := sq
-		if color == BLACK {
-			idx = flipSquare(sq)
-		}
-
-		val := pieceSquareTable[pt][idx]
-		if color == WHITE {
-			whiteScore += val
-		} else {
-			blackScore += val
-		}
-	}
-
-	score := whiteScore - blackScore + advancedValue
+	minor := pos.probeMinorEval()
+	dynamic := pos.ComputeDynamicEval()
+	score := minor + dynamic
 	if pos.SideToMove == BLACK {
 		score = -score
 	}

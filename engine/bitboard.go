@@ -729,11 +729,12 @@ func InitMagics(pt PieceType, table []Bitboard, magics []Magic, magicsInit []Bit
 		// edges = ((Rank0BB | Rank9BB) & ~rank_bb(s)) | ((FileABB | FileIBB) & ~file_bb(s));
 		edges = (Rank0BB.Or(Rank9BB).And(rankBB(s).Not())).Or(FileABB.Or(FileIBB).And(fileBB(s).Not()))
 		m := &magics[s]
-		if pt == ROOK {
+		switch pt {
+		case ROOK:
 			m.mask = SlidingAttack(s, From64(0), pt)
-		} else if pt == CANNON {
+		case CANNON:
 			m.mask = RookMagics[s].mask
-		} else {
+		default:
 			m.mask = LameLeaperPath(pt, s)
 		}
 		if pt != KNIGHT_TO {

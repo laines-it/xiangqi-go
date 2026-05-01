@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"sync/atomic"
 )
 
 var (
@@ -9,16 +10,55 @@ var (
 	PvLength = [MAX_MOVES]int{}
 )
 
+type searchPV struct {
+	table  [MAX_MOVES * MAX_MOVES]MoveNG
+	length [MAX_MOVES]int
+}
+
+func (pv *searchPV) clear() {
+	clear(pv.table[:])
+	clear(pv.length[:])
+}
+
 func StorePvMove(move MoveNG, searchPly int) {
-	PvTable[searchPly*int(MAX_MOVES)+searchPly] = move
-	for nextPly := searchPly + 1; nextPly < PvLength[searchPly+1]; nextPly++ {
-		PvTable[searchPly*int(MAX_MOVES)+nextPly] = PvTable[(searchPly+1)*int(MAX_MOVES)+nextPly]
+	storePvMove(move, searchPly, &PvTable, &PvLength)
+}
+
+func searchState(pos *PositionNG) *StateInfo {
+	if pos.GamePly >= 0 && pos.GamePly < len(pos.searchStates) {
+		return &pos.searchStates[pos.GamePly]
 	}
-	PvLength[searchPly] = PvLength[searchPly+1]
+	return &StateInfo{}
+}
+
+func storePvMove(move MoveNG, searchPly int, pvTable *[MAX_MOVES * MAX_MOVES]MoveNG, pvLength *[MAX_MOVES]int) {
+	if pvTable == nil || pvLength == nil {
+		return
+	}
+
+	pvTable[searchPly*int(MAX_MOVES)+searchPly] = move
+	for nextPly := searchPly + 1; nextPly < pvLength[searchPly+1]; nextPly++ {
+		pvTable[searchPly*int(MAX_MOVES)+nextPly] = pvTable[(searchPly+1)*int(MAX_MOVES)+nextPly]
+	}
+	pvLength[searchPly] = pvLength[searchPly+1]
 }
 
 func Quiescence_ab(alpha, beta Value, pos *PositionNG) (bestScore Value) {
-	PvLength[pos.GamePly] = pos.GamePly
+	return quiescenceABAbort(alpha, beta, pos, &PvTable, &PvLength, nil)
+}
+
+func quiescenceAB(alpha, beta Value, pos *PositionNG, pvTable *[MAX_MOVES * MAX_MOVES]MoveNG, pvLength *[MAX_MOVES]int) (bestScore Value) {
+	return quiescenceABAbort(alpha, beta, pos, pvTable, pvLength, nil)
+}
+
+func quiescenceABAbort(alpha, beta Value, pos *PositionNG, pvTable *[MAX_MOVES * MAX_MOVES]MoveNG, pvLength *[MAX_MOVES]int, abort *atomic.Bool) (bestScore Value) {
+	if abort != nil && abort.Load() {
+		return alpha
+	}
+
+	if pvLength != nil {
+		pvLength[pos.GamePly] = pos.GamePly
+	}
 	evalation := pos.Evaluate()
 	if pos.GamePly >= int(MAX_MOVES) {
 		return evalation
@@ -30,15 +70,14 @@ func Quiescence_ab(alpha, beta Value, pos *PositionNG) (bestScore Value) {
 		alpha = evalation
 	}
 
-	var mp MovePicker
-	InitalizeMovePicker(&mp, true, MOVE_NONE, MOVE_NONE, MOVE_NONE, &pos.History)
-	for currentMove := SelectNextMove(&mp, pos); currentMove != MOVE_NONE; currentMove = SelectNextMove(&mp, pos) {
-		if !pos.Legal(currentMove) {
-			continue
+	mp := orderNoisyMovesByHeuristics(pos)
+	for currentMove := nextLegalOrderedMove(pos, &mp); currentMove != MOVE_NONE; currentMove = nextLegalOrderedMove(pos, &mp) {
+		if abort != nil && abort.Load() {
+			return alpha
 		}
-		var st StateInfo
-		pos.DoMove(currentMove, &st)
-		score := -Quiescence_ab(-beta, -alpha, pos)
+
+		pos.DoMove(currentMove, searchState(pos))
+		score := -quiescenceABAbort(-beta, -alpha, pos, pvTable, pvLength, abort)
 		/*
 			StorePvMove: a:-38, b: -37, score(0)): -37, ply: 4, move: i0h0, pos:
 			-Quiescence_ab(37, 38)
@@ -50,7 +89,7 @@ func Quiescence_ab(alpha, beta Value, pos *PositionNG) (bestScore Value) {
 			// fmt.Printf("xxx StorePvMove: %s, score: %d, searchPly: %d\n", pos.MoveStr(currentMove), score, pos.GamePly)
 			// fmt.Printf("StorePvMove: a:%d, b: %d, score(%d)): %v, ply: %d, move: %s, pos: %s\n",
 			// 	alpha, beta, pos.SideToMove, score, pos.GamePly, Move2Str(currentMove), pos.String())
-			StorePvMove(currentMove, pos.GamePly)
+			storePvMove(currentMove, pos.GamePly, pvTable, pvLength)
 			alpha = score
 
 			if score >= beta {
@@ -82,9 +121,8 @@ func QuiescenceYBWC(ctx context.Context, alpha, beta Value, pos *PositionNG) (be
 		alpha = evalation
 	}
 
-	var mp MovePicker
-	InitalizeMovePicker(&mp, true, MOVE_NONE, MOVE_NONE, MOVE_NONE, &pos.History)
-	for currentMove := SelectNextMove(&mp, pos); currentMove != MOVE_NONE; currentMove = SelectNextMove(&mp, pos) {
+	mp := orderNoisyMovesByHeuristics(pos)
+	for currentMove := nextLegalOrderedMove(pos, &mp); currentMove != MOVE_NONE; currentMove = nextLegalOrderedMove(pos, &mp) {
 
 		select {
 		case <-ctx.Done():
@@ -92,11 +130,7 @@ func QuiescenceYBWC(ctx context.Context, alpha, beta Value, pos *PositionNG) (be
 		default:
 		}
 
-		if !pos.Legal(currentMove) {
-			continue
-		}
-		var st StateInfo
-		pos.DoMove(currentMove, &st)
+		pos.DoMove(currentMove, searchState(pos))
 		score := -Quiescence_ab(-beta, -alpha, pos)
 		/*
 			StorePvMove: a:-38, b: -37, score(0)): -37, ply: 4, move: i0h0, pos:
@@ -123,7 +157,32 @@ func QuiescenceYBWC(ctx context.Context, alpha, beta Value, pos *PositionNG) (be
 }
 
 func Negamax_ab(alpha, beta Value, pos *PositionNG, depth uint8, doNullMove bool) (bestScore Value) {
-	PvLength[pos.GamePly] = pos.GamePly
+	return negamaxABAbort(alpha, beta, pos, depth, doNullMove, &PvTable, &PvLength, nil)
+}
+
+func negamaxABWithPV(alpha, beta Value, pos *PositionNG, depth uint8, doNullMove bool, pv *searchPV) Value {
+	return negamaxABWithPVAbort(alpha, beta, pos, depth, doNullMove, pv, nil)
+}
+
+func negamaxABWithPVAbort(alpha, beta Value, pos *PositionNG, depth uint8, doNullMove bool, pv *searchPV, abort *atomic.Bool) Value {
+	if pv == nil {
+		return negamaxABAbort(alpha, beta, pos, depth, doNullMove, nil, nil, abort)
+	}
+	return negamaxABAbort(alpha, beta, pos, depth, doNullMove, &pv.table, &pv.length, abort)
+}
+
+func negamaxAB(alpha, beta Value, pos *PositionNG, depth uint8, doNullMove bool, pvTable *[MAX_MOVES * MAX_MOVES]MoveNG, pvLength *[MAX_MOVES]int) (bestScore Value) {
+	return negamaxABAbort(alpha, beta, pos, depth, doNullMove, pvTable, pvLength, nil)
+}
+
+func negamaxABAbort(alpha, beta Value, pos *PositionNG, depth uint8, doNullMove bool, pvTable *[MAX_MOVES * MAX_MOVES]MoveNG, pvLength *[MAX_MOVES]int, abort *atomic.Bool) (bestScore Value) {
+	if abort != nil && abort.Load() {
+		return alpha
+	}
+
+	if pvLength != nil {
+		pvLength[pos.GamePly] = pos.GamePly
+	}
 	rootNode := pos.GamePly == 0
 	pvNode := alpha != beta-1
 	hashFlag := TT_ALPHA
@@ -137,7 +196,7 @@ func Negamax_ab(alpha, beta Value, pos *PositionNG, depth uint8, doNullMove bool
 	var bestMove MoveNG
 	if pos.GamePly > 0 {
 		var scoreInt16 int16
-		scoreInt16, ttMove = readHashEntry(pos.St.Top().key, int16(alpha), int16(beta), &bestMove, depth, uint8(pos.GamePly))
+		scoreInt16, ttMove = readHashEntry(pos.St.Top().key, pos.St.Top().key2, int16(alpha), int16(beta), &bestMove, depth, uint8(pos.GamePly))
 		score = int32(scoreInt16)
 		if score != int32(NO_HASH) && !pvNode {
 			return score
@@ -147,7 +206,7 @@ func Negamax_ab(alpha, beta Value, pos *PositionNG, depth uint8, doNullMove bool
 		return -MATERIAL_WEIGHTS[W_CANNON]
 	}
 	if depth == 0 {
-		return Quiescence_ab(alpha, beta, pos)
+		return quiescenceABAbort(alpha, beta, pos, pvTable, pvLength, abort)
 	}
 
 	// mate distance pruning
@@ -180,9 +239,8 @@ func Negamax_ab(alpha, beta Value, pos *PositionNG, depth uint8, doNullMove bool
 		}
 		if doNullMove {
 			if pos.GamePly > 0 && depth > 2 && staticEval >= beta {
-				var st StateInfo
-				pos.DoNullMove(&st)
-				score = -Negamax_ab(-beta, -beta+1, pos, depth-1-2, false)
+				pos.DoNullMove(searchState(pos))
+				score = -negamaxABAbort(-beta, -beta+1, pos, depth-1-2, false, pvTable, pvLength, abort)
 				pos.UndoNullMove()
 
 				if score >= beta {
@@ -196,7 +254,7 @@ func Negamax_ab(alpha, beta Value, pos *PositionNG, depth uint8, doNullMove bool
 			var newScore Value
 			if score < beta {
 				if depth == 1 {
-					newScore = Quiescence_ab(alpha, beta, pos)
+					newScore = quiescenceABAbort(alpha, beta, pos, pvTable, pvLength, abort)
 					if newScore > score {
 						return newScore
 					}
@@ -206,7 +264,7 @@ func Negamax_ab(alpha, beta Value, pos *PositionNG, depth uint8, doNullMove bool
 			score += MATERIAL_WEIGHTS[W_PAWN]
 
 			if score < beta && depth < 4 {
-				newScore = Quiescence_ab(alpha, beta, pos)
+				newScore = quiescenceABAbort(alpha, beta, pos, pvTable, pvLength, abort)
 				if newScore < beta {
 					if newScore > score {
 						return newScore
@@ -229,22 +287,21 @@ func Negamax_ab(alpha, beta Value, pos *PositionNG, depth uint8, doNullMove bool
 
 	movesSearched := 0
 	// loop over moves
-	var mp MovePicker
-	InitalizeMovePicker(&mp, false, ttMove, pos.Killers[pos.GamePly][0], pos.Killers[pos.GamePly][1], &pos.History)
-	for currentMove := SelectNextMove(&mp, pos); currentMove != MOVE_NONE; currentMove = SelectNextMove(&mp, pos) {
-		if !pos.Legal(currentMove) {
-			continue
+	mp := orderMovesByHeuristics(pos, ttMove)
+	for currentMove := nextLegalOrderedMove(pos, &mp); currentMove != MOVE_NONE; currentMove = nextLegalOrderedMove(pos, &mp) {
+		if abort != nil && abort.Load() {
+			return alpha
 		}
+
 		legalMoves++
 
 		// futility pruning
 		if futilityPruning > 0 && movesSearched > 0 && !pos.Capture(currentMove) && !pos.GivesCheck(currentMove) {
 			continue
 		}
-		var st StateInfo
-		pos.DoMove(currentMove, &st)
+		pos.DoMove(currentMove, searchState(pos))
 		if depth < 5 || movesSearched == 0 {
-			score = -Negamax_ab(-beta, -alpha, pos, depth-1, true)
+			score = -negamaxABAbort(-beta, -alpha, pos, depth-1, true, pvTable, pvLength, abort)
 		} else {
 			// LMR
 			if IsOKMove(pos.Killers[pos.GamePly][0]) && IsOKMove(pos.Killers[pos.GamePly][1]) {
@@ -259,7 +316,7 @@ func Negamax_ab(alpha, beta Value, pos *PositionNG, depth uint8, doNullMove bool
 					(mFrom != k0From || mTo != k0To) &&
 					(mFrom != k1From || mTo != k1To) &&
 					!pos.Capture(currentMove) {
-					score = -Negamax_ab(-alpha-1, -alpha, pos, depth-2, true)
+					score = -negamaxABAbort(-alpha-1, -alpha, pos, depth-2, true, pvTable, pvLength, abort)
 				} else {
 					score = alpha + 1
 				}
@@ -268,9 +325,9 @@ func Negamax_ab(alpha, beta Value, pos *PositionNG, depth uint8, doNullMove bool
 			}
 			// PVS
 			if score > alpha {
-				score = -Negamax_ab(-alpha-1, -alpha, pos, depth-1, true)
+				score = -negamaxABAbort(-alpha-1, -alpha, pos, depth-1, true, pvTable, pvLength, abort)
 				if (score > alpha) && score < beta {
-					score = -Negamax_ab(-beta, -alpha, pos, depth-1, true)
+					score = -negamaxABAbort(-beta, -alpha, pos, depth-1, true, pvTable, pvLength, abort)
 				}
 			}
 		}
@@ -283,7 +340,7 @@ func Negamax_ab(alpha, beta Value, pos *PositionNG, depth uint8, doNullMove bool
 			bestMove = currentMove
 			alpha = score
 			// fmt.Printf("vvv StorePvMove: %s, score: %d, depth: %d, alpha: %d, searchPly: %d\n", pos.MoveStr(currentMove), score, depth, alpha, pos.GamePly)
-			StorePvMove(currentMove, pos.GamePly)
+			storePvMove(currentMove, pos.GamePly, pvTable, pvLength)
 
 			// store history moves
 			if !pos.Capture(currentMove) {
@@ -293,8 +350,7 @@ func Negamax_ab(alpha, beta Value, pos *PositionNG, depth uint8, doNullMove bool
 			}
 			if score >= beta {
 				// store hash entry with the score equal to beta
-				writeHashEntry(pos.St.Top().key, int16(beta), bestMove, depth, uint8(pos.GamePly), TT_BETA)
-
+				writeHashEntry(pos.St.Top().key, pos.St.Top().key2, int16(beta), bestMove, depth, uint8(pos.GamePly), TT_BETA)
 				// store killer moves
 				if !pos.Capture(currentMove) {
 					pos.Killers[pos.GamePly][1] = pos.Killers[pos.GamePly][0]
@@ -311,7 +367,7 @@ func Negamax_ab(alpha, beta Value, pos *PositionNG, depth uint8, doNullMove bool
 	}
 
 	// store hash entry with the score equal to alpha
-	writeHashEntry(pos.St.Top().key, int16(alpha), bestMove, depth, uint8(pos.GamePly), hashFlag)
+	writeHashEntry(pos.St.Top().key, pos.St.Top().key2, int16(alpha), bestMove, depth, uint8(pos.GamePly), hashFlag)
 
 	return alpha
 }
@@ -361,9 +417,9 @@ func (pos *PositionNG) SearchPosition(depth uint8) (bestMove MoveNG) {
 			alpha = max(prevScore-window, -VALUE_INFINITE)
 			beta = min(prevScore+window, VALUE_INFINITE)
 		}
-		score := Negamax(currentDepth, pos)
+		score := Negamax(currentDepth, pos, true)
 		if currentDepth > 2 && (score <= alpha || score >= beta) {
-			score = Negamax(currentDepth, pos)
+			score = Negamax(currentDepth, pos, true)
 		}
 		prevScore = score
 
@@ -395,25 +451,26 @@ const (
 
 const NO_HASH int16 = 32767
 
-func readHashEntry(key Key, alpha, beta int16, bestMove *MoveNG, depth, ply uint8) (int16, MoveNG) {
+func readHashEntry(key, key2 Key, alpha, beta int16, bestMove *MoveNG, depth, ply uint8) (int16, MoveNG) {
 	entry := &TT.Entries[key&TT.Mask]
-	if entry.Key == key {
-		if entry.Depth >= depth {
-			score := entry.Score
+	data, ok := entry.Load()
+	if ok && data.Key == key && data.Key2 == key2 {
+		if data.Depth >= depth {
+			score := data.Score
 			if score < -MATE_SCORE {
 				score += int16(ply)
 			}
 			if score > MATE_SCORE {
 				score -= int16(ply)
 			}
-			if entry.Flag == TT_EXACT {
-				return score, entry.Move
+			if data.Flag == TT_EXACT {
+				return score, data.Move
 			}
-			if entry.Flag == TT_ALPHA && score <= alpha {
-				return alpha, entry.Move
+			if data.Flag == TT_ALPHA && score <= alpha {
+				return alpha, data.Move
 			}
-			if entry.Flag == TT_BETA && score >= beta {
-				return beta, entry.Move
+			if data.Flag == TT_BETA && score >= beta {
+				return beta, data.Move
 			}
 		}
 	}
@@ -421,7 +478,7 @@ func readHashEntry(key Key, alpha, beta int16, bestMove *MoveNG, depth, ply uint
 }
 
 // write hash entry data
-func writeHashEntry(key Key, score int16, bestMove MoveNG, depth, ply uint8, flag int8) {
+func writeHashEntry(key, key2 Key, score int16, bestMove MoveNG, depth, ply uint8, flag int8) {
 	entry := &TT.Entries[key&TT.Mask]
 	if score < -MATE_SCORE {
 		score -= int16(ply)
@@ -429,10 +486,13 @@ func writeHashEntry(key Key, score int16, bestMove MoveNG, depth, ply uint8, fla
 	if score > MATE_SCORE {
 		score += int16(ply)
 	}
-	entry.Key = key
-	entry.Score = score
-	entry.Flag = flag
-	entry.Depth = depth
-	entry.Move = bestMove
-	entry.Age = age
+	entry.Store(ttEntryData{
+		Key:   key,
+		Key2:  key2,
+		Score: score,
+		Flag:  flag,
+		Depth: depth,
+		Move:  bestMove,
+		Age:   uint8(age.Load()),
+	})
 }

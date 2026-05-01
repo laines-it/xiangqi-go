@@ -2,235 +2,232 @@ package engine
 
 import (
 	"context"
+	"runtime"
 	"sync"
 )
+
+const ybwcMinSplitDepth uint8 = 4
+
+type ybwcContextKey struct{}
+type ybwcHelperContextKey struct{}
+
+type ybwcControl struct {
+	workers chan struct{}
+}
+
+var ybwcTTMu sync.Mutex
 
 type searchNode struct {
 	alpha Value
 	beta  Value
 }
 
-type ybwcResult struct {
-	alpha     Value
-	bestMove  MoveNG
-	hashFlag  int8
-	legalMove bool
-	cutoff    bool
+type ybwcTTProbe struct {
+	move  MoveNG
+	score Value
+	hit   bool
 }
 
-func enterNode(ctx context.Context, pos *PositionNG, node searchNode, depth uint8) (Value, Value, bool, Value) {
+type ybwcSplitPoint struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+
+	pos   *PositionNG
+	depth uint8
+	beta  Value
+
+	moves       []MoveNG
+	nextMoveIdx int
+	activeTasks int
+	cancelled   bool
+
+	alpha     Value
+	bestScore Value
+	bestMove  MoveNG
+
+	lock sync.Mutex
+	done *sync.Cond
+}
+
+func newYBWCContext() context.Context {
+	workers := max(runtime.GOMAXPROCS(0)-1, 0)
+
+	return context.WithValue(context.Background(), ybwcContextKey{}, &ybwcControl{
+		workers: make(chan struct{}, workers),
+	})
+}
+
+func tryAcquireYBWCWorker(ctx context.Context, depth uint8) (func(), bool) {
+	if depth < ybwcMinSplitDepth {
+		return nil, false
+	}
+
+	control, ok := ctx.Value(ybwcContextKey{}).(*ybwcControl)
+	if !ok || control == nil {
+		return nil, false
+	}
+
+	select {
+	case control.workers <- struct{}{}:
+		return func() {
+			<-control.workers
+		}, true
+	default:
+		return nil, false
+	}
+}
+
+func ybwcHelperContext(ctx context.Context) context.Context {
+	return context.WithValue(ctx, ybwcHelperContextKey{}, true)
+}
+
+func isYBWCHelper(ctx context.Context) bool {
+	helper, _ := ctx.Value(ybwcHelperContextKey{}).(bool)
+	return helper
+}
+
+func ybwcReadHashEntry(key, key2 Key, alpha, beta int16, bestMove *MoveNG, depth, ply uint8) (int16, MoveNG) {
+	ybwcTTMu.Lock()
+	defer ybwcTTMu.Unlock()
+
+	return readHashEntry(key, key2, alpha, beta, bestMove, depth, ply)
+}
+
+func ybwcWriteHashEntry(key, key2 Key, score int16, bestMove MoveNG, depth, ply uint8, flag int8) {
+	ybwcTTMu.Lock()
+	defer ybwcTTMu.Unlock()
+
+	writeHashEntry(key, key2, score, bestMove, depth, ply, flag)
+}
+
+func ybwcProbeTT(pos *PositionNG, depth uint8, alpha, beta Value) ybwcTTProbe {
+	ybwcTTMu.Lock()
+	defer ybwcTTMu.Unlock()
+
+	entry := &TT.Entries[pos.St.Top().key&TT.Mask]
+	data, ok := entry.Load()
+	if !ok || data.Key != pos.St.Top().key || data.Key2 != pos.St.Top().key2 {
+		return ybwcTTProbe{move: MOVE_NONE}
+	}
+
+	probe := ybwcTTProbe{move: data.Move}
+	if data.Depth < depth {
+		return probe
+	}
+
+	score := data.Score
+	ply := int16(pos.GamePly)
+	if score < -MATE_SCORE {
+		score += ply
+	}
+	if score > MATE_SCORE {
+		score -= ply
+	}
+
+	value := Value(score)
+	switch data.Flag {
+	case TT_EXACT:
+		probe.score = value
+		probe.hit = true
+	case TT_BETA:
+		if value >= beta {
+			probe.score = value
+			probe.hit = true
+		}
+	case TT_ALPHA:
+		if value <= alpha {
+			probe.score = value
+			probe.hit = true
+		}
+	}
+
+	return probe
+}
+
+func ybwcEnterNode(ctx context.Context, pos *PositionNG, node searchNode, depth uint8) (searchNode, bool, Value) {
+	select {
+	case <-ctx.Done():
+		return node, true, node.alpha
+	default:
+	}
+
+	if !isYBWCHelper(ctx) {
+		PvLength[pos.GamePly] = pos.GamePly
+	}
+
 	if pos.IsDraw() {
-		return node.alpha, node.beta, true, 0
+		return node, true, VALUE_DRAW
 	}
 
 	if pos.GamePly > 0 && pos.IsRepetition() {
-		return node.alpha, node.beta, true, -MATERIAL_WEIGHTS[W_CANNON]
+		return node, true, -MATERIAL_WEIGHTS[W_CANNON]
 	}
 
 	if depth == 0 {
-		return node.alpha, node.beta, true, QuiescenceYBWC(ctx, node.alpha, node.beta, pos)
+		return node, true, pos.Evaluate()
 	}
 
-	if node.alpha < -int32(MATE_VALUE) {
-		node.alpha = -int32(MATE_VALUE)
+	if node.alpha < -Value(MATE_VALUE) {
+		node.alpha = -Value(MATE_VALUE)
 	}
-	if node.beta > int32(MATE_VALUE-1) {
-		node.beta = int32(MATE_VALUE) - 1
+	if node.beta > Value(MATE_VALUE-1) {
+		node.beta = Value(MATE_VALUE - 1)
 	}
 	if node.alpha >= node.beta {
-		return node.alpha, node.beta, true, node.alpha
+		return node, true, node.alpha
 	}
 
-	return node.alpha, node.beta, false, 0
+	return node, false, 0
 }
 
-func probeTT(pos *PositionNG, node searchNode, depth uint8, pvNode bool) (MoveNG, MoveNG, int8) {
-	var ttMove MoveNG
-	var bestMove MoveNG
-	hashFlag := TT_ALPHA
-
-	if pos.GamePly > 0 {
-		var scoreInt16 int16
-		scoreInt16, ttMove = readHashEntry(pos.St.Top().key, int16(node.alpha), int16(node.beta), &bestMove, depth, uint8(pos.GamePly))
-		score := int32(scoreInt16)
-
-		if score == int32(NO_HASH) || pvNode {
-			return ttMove, bestMove, TT_EXACT
-		}
+func ybwcOrderedLegalMoves(pos *PositionNG, ttMove MoveNG) []MoveNG {
+	mp := orderMovesByHeuristics(pos, ttMove)
+	moves := make([]MoveNG, 0, MAX_MOVES)
+	for move := nextLegalOrderedMove(pos, &mp); move != MOVE_NONE; move = nextLegalOrderedMove(pos, &mp) {
+		moves = append(moves, move)
 	}
-
-	return ttMove, bestMove, hashFlag
+	return moves
 }
 
-// returns Pruning, isPruned, score
-func applyStaticPruning(
-	ctx context.Context,
-	pos *PositionNG,
-	node searchNode,
-	depth uint8,
-	pvNode bool,
-	inCheck bool,
-	doNullMove bool,
-	rootNode bool,
-) (int, bool, Value) {
+func ybwcSearchChild(ctx context.Context, pos *PositionNG, move MoveNG, depth uint8, alpha, beta Value) Value {
+	var st StateInfo
+	pos.DoMove(move, &st)
+	score := -NegamaxYBWC(ctx, pos, searchNode{-beta, -alpha}, depth-1, true)
+	pos.UndoMove(move)
 
-	if pvNode || inCheck {
-		return 0, false, 0
-	}
-
-	staticEval := pos.Evaluate()
-
-	if pruned, score := reverseFutilityPruning(staticEval, node.alpha, node.beta, depth, rootNode); pruned {
-		return 0, true, score
-	}
-
-	if doNullMove {
-		if pruned, score := nullMovePruning(ctx, pos, staticEval, node.beta, depth); pruned {
-			return 0, true, score
-		}
-	}
-
-	if pruned, score := razoring(ctx, pos, staticEval, node.alpha, node.beta, depth); pruned {
-		return 0, true, score
-	}
-
-	futility := futilityPruningFlag(staticEval, node.alpha, depth)
-
-	return futility, false, 0
+	return score
 }
 
-func reverseFutilityPruning(
-	staticEval Value,
-	alpha, beta Value,
-	depth uint8,
-	rootNode bool,
-) (bool, Value) {
-
-	if depth > 5 || rootNode || beta <= -1000 || alpha >= 1000 {
-		return false, 0
-	}
-
-	if staticEval < alpha-int32(depth)*200 {
-		return true, staticEval
-	}
-
-	if staticEval > beta+int32(depth)*125 {
-		return true, staticEval
-	}
-
-	return false, 0
-}
-
-func nullMovePruning(
-	ctx context.Context,
-	pos *PositionNG,
-	staticEval Value,
-	beta Value,
-	depth uint8,
-) (bool, Value) {
-
-	if pos.GamePly == 0 || depth <= 2 || staticEval < beta {
-		return false, 0
-	}
+func ybwcSearchSplitMove(ctx context.Context, split *ybwcSplitPoint, move MoveNG, localAlpha, localBeta Value) Value {
+	localPos := split.pos.DeepCopy()
 
 	var st StateInfo
-	pos.DoNullMove(&st)
+	localPos.DoMove(move, &st)
 
-	score := -NegamaxYBWC(ctx, pos, searchNode{-beta, -beta + 1}, depth-3, false)
-
-	pos.UndoNullMove()
-
-	if score >= beta {
-		return true, beta
+	score := -NegamaxYBWC(ctx, localPos, searchNode{-localAlpha - 1, -localAlpha}, split.depth-1, true)
+	if ctx.Err() != nil {
+		localPos.UndoMove(move)
+		return localAlpha
 	}
 
-	return false, 0
-}
-
-func razoring(
-	ctx context.Context,
-	pos *PositionNG,
-	staticEval Value,
-	alpha, beta Value,
-	depth uint8,
-) (bool, Value) {
-
-	score := staticEval + MATERIAL_WEIGHTS[W_PAWN]
-
-	if score < beta {
-		if depth == 1 {
-			qScore := QuiescenceYBWC(ctx, alpha, beta, pos)
-
-			if qScore > score {
-				return true, qScore
-			}
-			return true, score
+	if score > localAlpha && score < localBeta {
+		score = -NegamaxYBWC(ctx, localPos, searchNode{-localBeta, -localAlpha}, split.depth-1, true)
+		if ctx.Err() != nil {
+			localPos.UndoMove(move)
+			return localAlpha
 		}
 	}
 
-	score += MATERIAL_WEIGHTS[W_PAWN]
-
-	if score < beta && depth < 4 {
-		qScore := QuiescenceYBWC(ctx, alpha, beta, pos)
-
-		if qScore < beta {
-			if qScore > score {
-				return true, qScore
-			}
-			return true, score
-		}
-	}
-
-	return false, 0
+	localPos.UndoMove(move)
+	return score
 }
 
-func futilityPruningFlag(
-	staticEval Value,
-	alpha Value,
-	depth uint8,
-) int {
-
-	if depth >= 4 || abs(int(alpha)) >= int(MATE_SCORE) {
-		return 0
+func ybwcRecordBestLine(ctx context.Context, pos *PositionNG, move MoveNG, depth uint8) {
+	if isYBWCHelper(ctx) {
+		return
 	}
-
-	futilityMargin := [...]Value{
-		0,
-		MATERIAL_WEIGHTS[W_PAWN],
-		MATERIAL_WEIGHTS[W_KNIGHT],
-		MATERIAL_WEIGHTS[W_CANNON],
-	}
-
-	if staticEval+futilityMargin[depth] <= alpha {
-		return 1
-	}
-
-	return 0
-}
-
-func orderMovesByHeuristics(pos *PositionNG, ttMove MoveNG) MovePicker {
-	var mp MovePicker
-	InitalizeMovePicker(&mp, false, ttMove, pos.Killers[pos.GamePly][0], pos.Killers[pos.GamePly][1], &pos.History)
-	return mp
-}
-
-func nextLegalOrderedMove(pos *PositionNG, mp *MovePicker) MoveNG {
-	for move := SelectNextMove(mp, pos); move != MOVE_NONE; move = SelectNextMove(mp, pos) {
-		if pos.Legal(move) {
-			return move
-		}
-	}
-
-	return MOVE_NONE
-}
-
-func updateBestLine(pos *PositionNG, move MoveNG, score Value, depth uint8, result *ybwcResult) {
-	result.hashFlag = TT_EXACT
-	result.bestMove = move
-	result.alpha = score
 
 	StorePvMove(move, pos.GamePly)
-
 	if !pos.Capture(move) {
 		mFrom := FromSQ(move)
 		mTo := ToSQ(move)
@@ -238,219 +235,207 @@ func updateBestLine(pos *PositionNG, move MoveNG, score Value, depth uint8, resu
 	}
 }
 
-func storeBetaCutoff(pos *PositionNG, move MoveNG, depth uint8, beta Value, bestMove MoveNG) {
-	writeHashEntry(pos.St.Top().key, int16(beta), bestMove, depth, uint8(pos.GamePly), TT_BETA)
-
-	if !pos.Capture(move) {
-		pos.Killers[pos.GamePly][1] = pos.Killers[pos.GamePly][0]
-		pos.Killers[pos.GamePly][0] = move
+func ybwcRecordCutoff(ctx context.Context, pos *PositionNG, move MoveNG) {
+	if isYBWCHelper(ctx) || pos.Capture(move) {
+		return
 	}
+
+	pos.Killers[pos.GamePly][1] = pos.Killers[pos.GamePly][0]
+	pos.Killers[pos.GamePly][0] = move
 }
 
-// The first ordered child is searched synchronously. Because every descendant
-// repeats this rule, this worker follows the principal variation before the
-// current node is split.
-func searchPrincipalVariation(
-	ctx context.Context,
-	pos *PositionNG,
-	node searchNode,
-	depth uint8,
-	mp *MovePicker,
-	bestMove MoveNG,
-	hashFlag int8,
-) ybwcResult {
-
-	result := ybwcResult{
-		alpha:     node.alpha,
-		bestMove:  bestMove,
-		hashFlag:  hashFlag,
-		legalMove: false,
+func ybwcStoreBound(pos *PositionNG, depth uint8, score, oldAlpha, beta Value, bestMove MoveNG) {
+	flag := TT_EXACT
+	if score <= oldAlpha {
+		flag = TT_ALPHA
+	} else if score >= beta {
+		flag = TT_BETA
 	}
 
-	move := nextLegalOrderedMove(pos, mp)
-	if move == MOVE_NONE {
-		return result
-	}
-
-	result.legalMove = true
-
-	var st StateInfo
-	pos.DoMove(move, &st)
-
-	score := -NegamaxYBWC(ctx, pos, searchNode{-node.beta, -node.alpha}, depth-1, true)
-
-	pos.UndoMove(move)
-
-	if score > result.alpha {
-		updateBestLine(pos, move, score, depth, &result)
-
-		if result.alpha >= node.beta {
-			storeBetaCutoff(pos, move, depth, node.beta, result.bestMove)
-			result.alpha = node.beta
-			result.cutoff = true
-		}
-	}
-
-	return result
+	ybwcWriteHashEntry(pos.St.Top().key, pos.St.Top().key2, int16(score), bestMove, depth, uint8(pos.GamePly), flag)
 }
 
-// Once the PV child is fully searched, the rest of this node's ordered children
-// can be searched by independent workers.
-func searchRemainingMovesParallel(
-	ctx context.Context,
-	pos *PositionNG,
-	alpha, beta Value,
-	depth uint8,
-	mp *MovePicker,
-	bestMove MoveNG,
-	hashFlag int8,
-	futilityPruning int,
-) ybwcResult {
-
-	type moveResult struct {
-		move  MoveNG
-		score Value
-	}
-
-	resultCh := make(chan moveResult, 256)
-	var wg sync.WaitGroup
-
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	movesSearched := 1
-	result := ybwcResult{
+func newYBWCSplitPoint(ctx context.Context, pos *PositionNG, depth uint8, alpha, beta, bestScore Value, bestMove MoveNG, moves []MoveNG) *ybwcSplitPoint {
+	splitCtx, cancel := context.WithCancel(ctx)
+	split := &ybwcSplitPoint{
+		ctx:       splitCtx,
+		cancel:    cancel,
+		pos:       pos,
+		depth:     depth,
 		alpha:     alpha,
+		beta:      beta,
+		bestScore: bestScore,
 		bestMove:  bestMove,
-		hashFlag:  hashFlag,
-		legalMove: false,
+		moves:     moves,
 	}
+	split.done = sync.NewCond(&split.lock)
+	return split
+}
 
-	for move := nextLegalOrderedMove(pos, mp); move != MOVE_NONE; move = nextLegalOrderedMove(pos, mp) {
-		result.legalMove = true
+func (split *ybwcSplitPoint) finishedLocked() bool {
+	return split.activeTasks == 0 && (split.cancelled || split.nextMoveIdx >= len(split.moves))
+}
 
-		if futilityPruning > 0 && movesSearched > 0 && !pos.Capture(move) && !pos.GivesCheck(move) {
-			movesSearched++
-			continue
+func HelpSearchSplitPoint(split *ybwcSplitPoint) {
+	for {
+		split.lock.Lock()
+
+		if split.cancelled {
+			if split.activeTasks == 0 {
+				split.done.Broadcast()
+			}
+			split.lock.Unlock()
+			return
 		}
 
-		if ctx.Err() != nil {
+		if split.nextMoveIdx >= len(split.moves) {
+			if split.activeTasks == 0 {
+				split.done.Broadcast()
+			}
+			split.lock.Unlock()
+			return
+		}
+
+		move := split.moves[split.nextMoveIdx]
+		split.nextMoveIdx++
+		split.activeTasks++
+		localAlpha := split.alpha
+		localBeta := split.beta
+
+		split.lock.Unlock()
+
+		score := ybwcSearchSplitMove(ybwcHelperContext(split.ctx), split, move, localAlpha, localBeta)
+
+		split.lock.Lock()
+		split.activeTasks--
+
+		if !split.cancelled && score > split.bestScore {
+			split.bestScore = score
+			split.bestMove = move
+			if score > split.alpha {
+				split.alpha = score
+			}
+			if score >= split.beta {
+				split.cancelled = true
+				split.cancel()
+			}
+		}
+
+		if split.finishedLocked() {
+			split.done.Broadcast()
+		}
+		split.lock.Unlock()
+	}
+}
+
+func PublishSplitPoint(ctx context.Context, split *ybwcSplitPoint) *sync.WaitGroup {
+	var wg sync.WaitGroup
+	for range split.moves {
+		releaseWorker, ok := tryAcquireYBWCWorker(ctx, split.depth)
+		if !ok {
 			break
 		}
 
-		posCopy := pos.DeepCopy()
-		var st StateInfo
-		posCopy.DoMove(move, &st)
-
 		wg.Add(1)
-
-		childNode := searchNode{-beta, -result.alpha}
-
-		go func(m MoveNG, p *PositionNG, child searchNode) {
+		go func() {
 			defer wg.Done()
+			defer releaseWorker()
 
-			score := -NegamaxYBWC(ctx, p, child, depth-1, true)
-
-			select {
-			case resultCh <- moveResult{m, score}:
-			case <-ctx.Done():
-			}
-		}(move, posCopy, childNode)
-
-		movesSearched++
+			HelpSearchSplitPoint(split)
+		}()
 	}
 
-	go func() {
-		wg.Wait()
-		close(resultCh)
-	}()
+	return &wg
+}
 
-	for {
-		select {
-		case res, ok := <-resultCh:
-			if !ok {
-				return result
-			}
+func WaitUntilSplitPointFinished(split *ybwcSplitPoint) {
+	split.lock.Lock()
+	defer split.lock.Unlock()
 
-			if res.score > result.alpha {
-				updateBestLine(pos, res.move, res.score, depth, &result)
-
-				if result.alpha >= beta {
-					storeBetaCutoff(pos, res.move, depth, beta, result.bestMove)
-					cancel()
-					result.alpha = beta
-					result.cutoff = true
-					return result
-				}
-			}
-
-		case <-ctx.Done():
-			return result
-		}
+	for !split.finishedLocked() {
+		split.done.Wait()
 	}
 }
 
+func UnpublishSplitPoint(split *ybwcSplitPoint, workers *sync.WaitGroup) {
+	split.cancel()
+	workers.Wait()
+}
+
+func NegamaxYBWCUnordered(ctx context.Context, pos *PositionNG, node searchNode, depth uint8, split bool) Value {
+	return NegamaxYBWC(ctx, pos, node, depth, true)
+}
+
 func NegamaxYBWC(ctx context.Context, pos *PositionNG, node searchNode, depth uint8, doNullMove bool) Value {
-	select {
-	case <-ctx.Done():
-		return node.alpha
-	default:
-	}
-
-	PvLength[pos.GamePly] = pos.GamePly
-
-	rootNode := pos.GamePly == 0
-	pvNode := node.alpha != node.beta-1
-
-	alpha, beta, done, score := enterNode(ctx, pos, node, depth)
+	node, done, score := ybwcEnterNode(ctx, pos, node, depth)
 	if done {
 		return score
 	}
 
-	node.alpha = alpha
-	node.beta = beta
-
-	inCheck := pos.Checkers().IsNotZero()
-	if inCheck {
+	if pos.Checkers().IsNotZero() {
 		depth++
 	}
 
-	futilityPruning, pruned, score := applyStaticPruning(ctx, pos, node, depth, pvNode, inCheck, doNullMove, rootNode)
-	if pruned {
-		return score
+	oldAlpha := node.alpha
+	probe := ybwcProbeTT(pos, depth, node.alpha, node.beta)
+	if probe.hit {
+		return probe.score
 	}
 
-	ttMove, bestMove, hashFlag := probeTT(pos, node, depth, pvNode)
-
-	mp := orderMovesByHeuristics(pos, ttMove)
-
-	result := searchPrincipalVariation(ctx, pos, node, depth, &mp, bestMove, hashFlag)
-	if result.cutoff {
-		return result.alpha
+	moves := ybwcOrderedLegalMoves(pos, probe.move)
+	if len(moves) == 0 {
+		return -Value(MATE_VALUE) + Value(pos.GamePly)
 	}
 
-	node.alpha = result.alpha
-	bestMove = result.bestMove
-	hashFlag = result.hashFlag
-
-	siblingResult := searchRemainingMovesParallel(ctx, pos, node.alpha, node.beta, depth, &mp, bestMove, hashFlag, futilityPruning)
-	if siblingResult.cutoff {
-		return siblingResult.alpha
+	firstMove := moves[0]
+	bestScore := ybwcSearchChild(ctx, pos, firstMove, depth, node.alpha, node.beta)
+	if ctx.Err() != nil {
+		return node.alpha
 	}
 
-	if siblingResult.legalMove {
-		result.legalMove = true
+	bestMove := firstMove
+	ybwcRecordBestLine(ctx, pos, bestMove, depth)
+
+	if bestScore >= node.beta {
+		ybwcStoreBound(pos, depth, bestScore, oldAlpha, node.beta, bestMove)
+		ybwcRecordCutoff(ctx, pos, bestMove)
+		return bestScore
 	}
 
-	node.alpha = siblingResult.alpha
-	bestMove = siblingResult.bestMove
-	hashFlag = siblingResult.hashFlag
-
-	if !result.legalMove {
-		return -int32(MATE_VALUE) + int32(pos.GamePly)
+	if bestScore > node.alpha {
+		node.alpha = bestScore
 	}
 
-	writeHashEntry(pos.St.Top().key, int16(node.alpha), bestMove, depth, uint8(pos.GamePly), hashFlag)
+	if len(moves) > 1 {
+		split := newYBWCSplitPoint(ctx, pos, depth, node.alpha, node.beta, bestScore, bestMove, moves[1:])
+		workers := PublishSplitPoint(ctx, split)
 
-	return node.alpha
+		HelpSearchSplitPoint(split)
+		WaitUntilSplitPointFinished(split)
+		UnpublishSplitPoint(split, workers)
+
+		bestScore = split.bestScore
+		bestMove = split.bestMove
+		node.alpha = split.alpha
+
+		if ctx.Err() != nil {
+			return oldAlpha
+		}
+		if bestMove != firstMove {
+			ybwcRecordBestLine(ctx, pos, bestMove, depth)
+		}
+		if bestScore >= node.beta {
+			ybwcRecordCutoff(ctx, pos, bestMove)
+		}
+	}
+
+	ybwcStoreBound(pos, depth, bestScore, oldAlpha, node.beta, bestMove)
+	return bestScore
+}
+
+func (pos *PositionNG) SearchPositionYBWC(depth uint8) (bestMove MoveNG, score Value) {
+	clearSearch(pos)
+	ctx := newYBWCContext()
+	score = NegamaxYBWC(ctx, pos, searchNode{-VALUE_INFINITE, VALUE_INFINITE}, depth, false)
+	return PvTable[0], score
 }
