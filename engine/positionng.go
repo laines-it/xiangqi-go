@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode"
 )
@@ -22,6 +23,8 @@ const (
 )
 
 type Key = uint64
+
+var visitedPositionCount atomic.Uint64
 
 type Zobrist struct {
 	psq   [PIECE_NB][SQUARE_NB]Key
@@ -605,6 +608,7 @@ func (pos *PositionNG) MovePiece(from, to Square) {
 }
 
 func (pos *PositionNG) DoMove(m MoveNG, newSt *StateInfo) {
+	visitedPositionCount.Add(1)
 	pos.doMove(m, newSt, pos.GivesCheck(m))
 }
 

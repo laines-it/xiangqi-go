@@ -73,7 +73,6 @@ func BenchmarkLazySMPSearchAverage(b *testing.B) {
 
 func BenchmarkSequentialSearchMoves(b *testing.B) {
 	for _, depth := range sequentialSearchBenchmarkDepths {
-		depth := depth
 		b.Run("depth_"+itoaBenchmark(int(depth)), func(b *testing.B) {
 			b.Run("AlphaBeta", func(b *testing.B) {
 				benchmarkSequentialSearchMoves(b, depth, func(pos *PositionNG) (MoveNG, Value) {
@@ -121,6 +120,33 @@ func BenchmarkSearchAccuracyFixedFEN(b *testing.B) {
 	}
 }
 
+func BenchmarkSearchCountersFixedFEN(b *testing.B) {
+	for _, depth := range sequentialSearchBenchmarkDepths {
+		b.Run("depth_"+itoaBenchmark(int(depth)), func(b *testing.B) {
+			b.Run("AlphaBeta", func(b *testing.B) {
+				benchmarkSearchCountersFixedFEN(b, depth, func(pos *PositionNG) (MoveNG, Value) {
+					return pos.SearchPosition_ab(depth)
+				})
+			})
+			b.Run("YBWC", func(b *testing.B) {
+				benchmarkSearchCountersFixedFEN(b, depth, func(pos *PositionNG) (MoveNG, Value) {
+					return pos.SearchPositionYBWC(depth)
+				})
+			})
+			b.Run("LazySMP", func(b *testing.B) {
+				for _, threads := range sequentialSearchBenchmarkLazySMPThreads {
+					threads := threads
+					b.Run("threads_"+itoaBenchmark(threads), func(b *testing.B) {
+						benchmarkSearchCountersFixedFEN(b, depth, func(pos *PositionNG) (MoveNG, Value) {
+							return pos.SearchPositionLazySMP(depth, threads)
+						})
+					})
+				}
+			})
+		})
+	}
+}
+
 func benchmarkSequentialSearchMoves(b *testing.B, depth uint8, search func(*PositionNG) (MoveNG, Value)) {
 	b.Helper()
 	b.ReportAllocs()
@@ -147,6 +173,43 @@ func benchmarkSequentialSearchMoves(b *testing.B, depth uint8, search func(*Posi
 
 	if searchedMoves > 0 {
 		b.ReportMetric(float64(totalSearchNanos)/float64(searchedMoves)/1e6, "ms/move")
+	}
+}
+
+func benchmarkSearchCountersFixedFEN(b *testing.B, depth uint8, search func(*PositionNG) (MoveNG, Value)) {
+	b.Helper()
+	b.ReportAllocs()
+	b.StopTimer()
+
+	var totalPositions uint64
+	var totalEvaluates uint64
+	var searchedMoves int
+
+	for i := 0; i < b.N; i++ {
+		var pos PositionNG
+		pos.Set(sequentialSearchBenchmarkFEN)
+		TTClear()
+		MHTClear()
+
+		visitedPositionCount.Store(0)
+		evaluateCallCount.Store(0)
+
+		b.StartTimer()
+		moves := runSequentialSearchBenchmarkMoves(b, &pos, search)
+		b.StopTimer()
+
+		totalPositions += visitedPositionCount.Load()
+		totalEvaluates += evaluateCallCount.Load()
+		searchedMoves += moves
+	}
+
+	if b.N > 0 {
+		b.ReportMetric(float64(totalPositions)/float64(b.N), "positions/sequence")
+		b.ReportMetric(float64(totalEvaluates)/float64(b.N), "evals/sequence")
+	}
+	if searchedMoves > 0 {
+		b.ReportMetric(float64(totalPositions)/float64(searchedMoves), "positions/move")
+		b.ReportMetric(float64(totalEvaluates)/float64(searchedMoves), "evals/move")
 	}
 }
 

@@ -24,7 +24,7 @@ jobs:
       - name: Run sequential search benchmarks
         run: |
           set -o pipefail
-          go test ./engine -run '^$' -bench '^Benchmark(SequentialSearchMoves|SearchAccuracyFixedFEN)$' -benchtime=1x -count=1 -benchmem -timeout=0 | tee benchmark-results.txt
+          go test ./engine -run '^$' -bench '^Benchmark(SequentialSearchMoves|SearchAccuracyFixedFEN|SearchCountersFixedFEN)$' -benchtime=1x -count=1 -benchmem -timeout=0 | tee benchmark-results.txt
 
       - name: Upload benchmark results
         if: always()

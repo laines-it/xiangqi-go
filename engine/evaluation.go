@@ -1,6 +1,10 @@
 package engine
 
+import "sync/atomic"
+
 const advancedValue Value = 3
+
+var evaluateCallCount atomic.Uint64
 
 var MATERIAL_WEIGHTS = [...]Value{
 	//  0    1    2    3    4    5     6
@@ -106,6 +110,8 @@ var pieceSquareTable = [PIECE_TYPE_NB][SQUARE_NB]Value{
 }
 
 func (pos *PositionNG) Evaluate() Value {
+	evaluateCallCount.Add(1)
+
 	minor := pos.probeMinorEval()
 	dynamic := pos.ComputeDynamicEval()
 	score := minor + dynamic
