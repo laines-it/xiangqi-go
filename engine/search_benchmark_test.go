@@ -346,7 +346,7 @@ func prepareBenchmarkPosition(b *testing.B, fen string) *PositionNG {
 
 	var pos PositionNG
 	pos.Set(fen)
-	clearSearch(&pos)
+	clearSearch(newSearchContext(), &pos)
 
 	return &pos
 }

@@ -98,19 +98,12 @@ type PositionNG struct {
 
 	SideToMove Color
 	GamePly    int
-	Nodes      int
 
 	// Bloom filter for fast repetition filtering
 	Filter BloomFilter
 
 	// Board for chasing detection
-	idBoard [SQUARE_NB]int
-
-	History HistoryTable
-	Evals   [MAX_MOVES]Value
-	Killers [MAX_MOVES][2]MoveNG
-
-	searchStates [MAX_PLY]StateInfo
+	idBoard [SQUARE_NB]uint8
 }
 
 func (p *PositionNG) PieceOn(s Square) Piece {
@@ -621,7 +614,6 @@ func (pos *PositionNG) doMove(m MoveNG, newSt *StateInfo, givesCheck bool) {
 
 	st := pos.St.Top()
 
-	pos.Nodes++
 	// Update the bloom filter
 	pos.Filter.Incr(st.key)
 
@@ -796,13 +788,9 @@ func (pos *PositionNG) resetToEmpty() {
 	clear(pos.PieceCount[:])
 	clear(pos.KingSQ[:])
 	clear(pos.idBoard[:])
-	clear(pos.Evals[:])
-	clear(pos.Killers[:])
-	pos.History = HistoryTable{}
 	pos.Filter.Reset()
 	pos.SideToMove = WHITE
 	pos.GamePly = 0
-	pos.Nodes = 0
 	pos.St = nil
 }
 
@@ -1055,8 +1043,8 @@ func (pos *PositionNG) IsDraw() bool {
 // / Position::detect_chases() detects chases from state st - d to state st
 func (pos *PositionNG) DetectChases(d, ply int) Value {
 	// Grant each piece on board a unique id for each side
-	whiteID := 0
-	blackID := 0
+	whiteID := uint8(0)
+	blackID := uint8(0)
 	for s := SQ_A0; s <= SQ_I9; s++ {
 		if pos.Board[s] != NO_PIECE {
 			if ColorOf(pos.Board[s]) == WHITE {

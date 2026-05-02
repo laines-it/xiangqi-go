@@ -3,8 +3,6 @@ package engine
 import "sync"
 
 type positionCopyOptions struct {
-	preserveHeuristics bool
-	resetNodes         bool
 }
 
 var positionCopyPool sync.Pool
@@ -24,8 +22,24 @@ func borrowPositionCopy(src *PositionNG) *PositionNG {
 	return copyPosition(src)
 }
 
+func borrowPositionBranch(src *PositionNG, ctx *SearchContext) *PositionNG {
+	if copied, ok := positionCopyPool.Get().(*PositionNG); ok {
+		copyPositionBranchInto(copied, src, ctx)
+		return copied
+	}
+
+	copied := &PositionNG{}
+	copyPositionBranchInto(copied, src, ctx)
+	return copied
+}
+
 func releasePositionCopy(pos *PositionNG) {
 	positionCopyPool.Put(pos)
+}
+
+func copyPositionBranchInto(dst, src *PositionNG, ctx *SearchContext) {
+	*dst = *src
+	dst.St = ctx.copyStateStack(src.St)
 }
 
 func copyPositionInto(dst, src *PositionNG, opts positionCopyOptions) {
@@ -33,18 +47,7 @@ func copyPositionInto(dst, src *PositionNG, opts positionCopyOptions) {
 }
 
 func copyPositionIntoWithStack(dst, src *PositionNG, opts positionCopyOptions, st StateInfoStack) {
-	history := dst.History
-	killers := dst.Killers
-
 	*dst = *src
-
-	if opts.preserveHeuristics {
-		dst.History = history
-		dst.Killers = killers
-	}
-	if opts.resetNodes {
-		dst.Nodes = 0
-	}
 	dst.St = copyStateInfoStackInto(dst, st, src.St)
 }
 
@@ -68,42 +71,11 @@ func copyStateInfoStackInto(pos *PositionNG, dst, src StateInfoStack) StateInfoS
 			continue
 		}
 
-		if state, ok := pos.stateCopySlot(i); ok {
-			*state = *srcSt
-			dst[i] = state
-			continue
-		}
-
-		if dst[i] == nil || (i > 0 && pos.isSearchState(dst[i])) {
+		if dst[i] == nil {
 			dst[i] = &StateInfo{}
 		}
 		*dst[i] = *srcSt
 	}
 
 	return dst
-}
-
-func (pos *PositionNG) stateCopySlot(stackIndex int) (*StateInfo, bool) {
-	if stackIndex == 0 {
-		return nil, false
-	}
-
-	stateIndex := stackIndex - 1
-	if stateIndex < 0 || stateIndex >= len(pos.searchStates) || stateIndex == pos.GamePly {
-		return nil, false
-	}
-
-	return &pos.searchStates[stateIndex], true
-}
-
-func (pos *PositionNG) isSearchState(st *StateInfo) bool {
-	if st == nil {
-		return false
-	}
-	for i := range pos.searchStates {
-		if st == &pos.searchStates[i] {
-			return true
-		}
-	}
-	return false
 }

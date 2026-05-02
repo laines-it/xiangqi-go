@@ -25,6 +25,7 @@ type LazySMPRootMove struct {
 type lazySMPThreadData struct {
 	idx            int
 	pos            *PositionNG
+	ctx            *SearchContext
 	rootMoves      []LazySMPRootMove
 	pv             searchPV
 	previousScore  Value
@@ -54,18 +55,19 @@ func (pos *PositionNG) SearchPositionLazySMP(depth uint8, threadCount int) (best
 
 func (pos *PositionNG) SearchPositionLazySMPWithOptions(depth uint8, opts LazySMPOptions) (bestMove MoveNG, score Value) {
 	opts = opts.normalized()
-	clearSearch(pos)
+	ctx := newSearchContext()
+	clearSearch(ctx, pos)
 
-	rootMoves := lazySMPGenerateRootMoves(pos)
+	rootMoves := lazySMPGenerateRootMoves(pos, ctx)
 	if depth == 0 || len(rootMoves) == 0 {
 		return MOVE_NONE, VALUE_DRAW
 	}
 
-	return pos.searchPositionLazySMPSynchronized(depth, opts, rootMoves)
+	return pos.searchPositionLazySMPSynchronized(ctx, depth, opts, rootMoves)
 }
 
-func (pos *PositionNG) searchPositionLazySMPSynchronized(depth uint8, opts LazySMPOptions, rootMoves []LazySMPRootMove) (bestMove MoveNG, score Value) {
-	threads := lazySMPCreateThreads(pos, opts, rootMoves)
+func (pos *PositionNG) searchPositionLazySMPSynchronized(ctx *SearchContext, depth uint8, opts LazySMPOptions, rootMoves []LazySMPRootMove) (bestMove MoveNG, score Value) {
+	threads := lazySMPCreateThreads(pos, ctx, opts, rootMoves)
 	workers := lazySMPStartWorkers(threads[1:])
 	defer lazySMPStopWorkers(workers)
 
@@ -130,17 +132,20 @@ func (opts LazySMPOptions) normalized() LazySMPOptions {
 	return opts
 }
 
-func lazySMPCreateThreads(pos *PositionNG, opts LazySMPOptions, rootMoves []LazySMPRootMove) []*lazySMPThreadData {
+func lazySMPCreateThreads(pos *PositionNG, rootCtx *SearchContext, opts LazySMPOptions, rootMoves []LazySMPRootMove) []*lazySMPThreadData {
 	threads := make([]*lazySMPThreadData, opts.Threads)
 	for idx := range threads {
 		threadPos := pos
+		threadCtx := rootCtx
 		if idx > 0 {
-			threadPos = lazySMPCopyPosition(pos)
+			threadCtx = newSearchContext()
+			threadPos = lazySMPCopyPosition(pos, threadCtx)
 		}
 
 		threads[idx] = &lazySMPThreadData{
 			idx:        idx,
 			pos:        threadPos,
+			ctx:        threadCtx,
 			minQSDepth: opts.MinQSDepth,
 		}
 		threads[idx].setRootMoves(rootMoves)
@@ -208,7 +213,7 @@ func lazySMPRunAspirationIteration(rootPos *PositionNG, threads []*lazySMPThread
 
 func (thread *lazySMPThreadData) prepareRootSearch(rootPos *PositionNG, rootMoves []LazySMPRootMove) {
 	if thread.pos != rootPos {
-		lazySMPSyncRootPosition(thread.pos, rootPos)
+		lazySMPSyncRootPosition(thread.pos, rootPos, thread.ctx)
 	}
 	thread.setRootMoves(rootMoves)
 }
@@ -249,10 +254,10 @@ func (thread *lazySMPThreadData) searchRoot(depth uint8, alpha, beta Value, abor
 		}
 
 		move := thread.rootMoves[i].Move
-		thread.pos.DoMove(move, searchState(thread.pos))
+		thread.pos.DoMove(move, searchState(thread.ctx, thread.pos))
 
 		thread.pv.clear()
-		score := -negamaxABWithPVAbort(-beta, -alpha, thread.pos, depth-1, true, &thread.pv, abortFlag)
+		score := -negamaxABWithPVAbort(thread.ctx, -beta, -alpha, thread.pos, depth-1, true, &thread.pv, abortFlag)
 		thread.pos.UndoMove(move)
 
 		if abortFlag != nil && abortFlag.Load() {
@@ -289,9 +294,9 @@ func (thread *lazySMPThreadData) searchRoot(depth uint8, alpha, beta Value, abor
 	}
 }
 
-func lazySMPGenerateRootMoves(pos *PositionNG) []LazySMPRootMove {
+func lazySMPGenerateRootMoves(pos *PositionNG, ctx *SearchContext) []LazySMPRootMove {
 	rootMoves := make([]LazySMPRootMove, 0, MAX_MOVES)
-	mp := orderMovesByHistory(pos)
+	mp := orderMovesByHistory(pos, ctx)
 	for move := nextLegalOrderedMove(pos, &mp); move != MOVE_NONE; move = nextLegalOrderedMove(pos, &mp) {
 		rootMoves = append(rootMoves, LazySMPRootMove{
 			Move:  move,
@@ -375,15 +380,14 @@ func lazySMPBuildPVFromSearch(root *LazySMPRootMove, rootMove MoveNG, searchLine
 	}
 }
 
-func lazySMPCopyPosition(pos *PositionNG) *PositionNG {
-	return copyPosition(pos)
+func lazySMPCopyPosition(pos *PositionNG, ctx *SearchContext) *PositionNG {
+	copied := &PositionNG{}
+	copyPositionBranchInto(copied, pos, ctx)
+	return copied
 }
 
-func lazySMPSyncRootPosition(dst, src *PositionNG) {
-	copyPositionInto(dst, src, positionCopyOptions{
-		preserveHeuristics: true,
-		resetNodes:         true,
-	})
+func lazySMPSyncRootPosition(dst, src *PositionNG, ctx *SearchContext) {
+	copyPositionBranchInto(dst, src, ctx)
 }
 
 func lazySMPPublishMainPV(thread *lazySMPThreadData) {

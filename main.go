@@ -80,7 +80,7 @@ func main() {
 	// fmt.Println(pos.String(light))
 
 	// Match example
-	startMatch("YBWC", GetBestMoveYBWC, 2, "LazySMP", GetBestMoveLazy5, 6)
+	startMatch("YBWC", GetBestMoveYBWC, 6, "LazySMP", GetBestMoveLazy5, 6)
 
 	// Accuracy example
 	// name := "YBWC"
@@ -184,9 +184,9 @@ func startMatch(name1 string, engine1 func(i int, pos *engine.PositionNG, depth 
 		i = 0
 	}
 	if result > 0 {
-		fmt.Printf("Матч завершён. Победитель: %s\n", name1)
-	} else if result < 0 {
 		fmt.Printf("Матч завершён. Победитель: %s\n", name2)
+	} else if result < 0 {
+		fmt.Printf("Матч завершён. Победитель: %s\n", name1)
 	} else {
 		fmt.Printf("Матч завершён. Ничья\n")
 	}

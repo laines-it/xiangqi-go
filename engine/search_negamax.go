@@ -2,13 +2,12 @@ package engine
 
 import "sync"
 
-func negamax(depth uint8, pos *PositionNG, move MoveNG, currentBestScore Value, ordered bool) (bestMove MoveNG, bestScore Value) {
+func negamaxWithContext(ctx *SearchContext, depth uint8, pos *PositionNG, move MoveNG, currentBestScore Value, ordered bool) (bestMove MoveNG, bestScore Value) {
 	bestMove = MOVE_NONE
 	bestScore = currentBestScore
 
-	var st StateInfo
-	pos.DoMove(move, &st)
-	score := -Negamax(depth-1, pos, ordered)
+	pos.DoMove(move, searchState(ctx, pos))
+	score := -NegamaxWithContext(ctx, depth-1, pos, ordered)
 	pos.UndoMove(move)
 
 	if score > currentBestScore {
@@ -20,7 +19,7 @@ func negamax(depth uint8, pos *PositionNG, move MoveNG, currentBestScore Value, 
 		if !pos.Capture(move) {
 			mFrom := FromSQ(move)
 			mTo := ToSQ(move)
-			pos.History[pos.SideToMove][mFrom][mTo] += int32(depth)
+			ctx.History[pos.SideToMove][mFrom][mTo] += int32(depth)
 		}
 	}
 
@@ -28,6 +27,12 @@ func negamax(depth uint8, pos *PositionNG, move MoveNG, currentBestScore Value, 
 }
 
 func Negamax(depth uint8, pos *PositionNG, ordered bool) (bestScore Value) {
+	ctx := newSearchContext()
+	pos.St = ctx.copyStateStack(pos.St)
+	return NegamaxWithContext(ctx, depth, pos, ordered)
+}
+
+func NegamaxWithContext(ctx *SearchContext, depth uint8, pos *PositionNG, ordered bool) (bestScore Value) {
 	PvLength[pos.GamePly] = pos.GamePly
 
 	if pos.IsDraw() {
@@ -48,7 +53,7 @@ func Negamax(depth uint8, pos *PositionNG, ordered bool) (bestScore Value) {
 	}
 
 	if depth == 0 {
-		return Quiescence(pos, ordered)
+		return QuiescenceWithContext(ctx, pos, ordered)
 	}
 
 	inCheck := pos.Checkers().IsNotZero()
@@ -61,10 +66,10 @@ func Negamax(depth uint8, pos *PositionNG, ordered bool) (bestScore Value) {
 
 	// loop over moves
 	if ordered {
-		mp := orderMovesByHeuristics(pos, bestMove)
+		mp := orderMovesByHeuristics(pos, ctx, bestMove)
 		for currentMove := nextLegalOrderedMove(pos, &mp); currentMove != MOVE_NONE; currentMove = nextLegalOrderedMove(pos, &mp) {
 			legalMoves++
-			move, score := negamax(depth, pos, currentMove, bestScore, ordered)
+			move, score := negamaxWithContext(ctx, depth, pos, currentMove, bestScore, ordered)
 			if score > bestScore {
 				bestMove = move
 				bestScore = score
@@ -80,9 +85,8 @@ func Negamax(depth uint8, pos *PositionNG, ordered bool) (bestScore Value) {
 
 			legalMoves++
 
-			var st StateInfo
-			pos.DoMove(currentMove, &st)
-			score := -Negamax(depth-1, pos, false)
+			pos.DoMove(currentMove, searchState(ctx, pos))
+			score := -NegamaxWithContext(ctx, depth-1, pos, false)
 			pos.UndoMove(currentMove)
 
 			if score > bestScore {
@@ -93,7 +97,7 @@ func Negamax(depth uint8, pos *PositionNG, ordered bool) (bestScore Value) {
 				if !pos.Capture(currentMove) {
 					mFrom := FromSQ(currentMove)
 					mTo := ToSQ(currentMove)
-					pos.History[pos.SideToMove][mFrom][mTo] += int32(depth)
+					ctx.History[pos.SideToMove][mFrom][mTo] += int32(depth)
 				}
 			}
 		}
@@ -114,6 +118,12 @@ func Negamax(depth uint8, pos *PositionNG, ordered bool) (bestScore Value) {
 }
 
 func Quiescence(pos *PositionNG, ordered bool) (bestScore Value) {
+	ctx := newSearchContext()
+	pos.St = ctx.copyStateStack(pos.St)
+	return QuiescenceWithContext(ctx, pos, ordered)
+}
+
+func QuiescenceWithContext(ctx *SearchContext, pos *PositionNG, ordered bool) (bestScore Value) {
 	PvLength[pos.GamePly] = pos.GamePly
 
 	evalation := pos.Evaluate()
@@ -123,15 +133,14 @@ func Quiescence(pos *PositionNG, ordered bool) (bestScore Value) {
 
 	bestScore = evalation
 
-	mp := orderNoisyMovesByHeuristics(pos)
+	mp := orderNoisyMovesByHeuristics(pos, ctx)
 	for currentMove := nextLegalOrderedMove(pos, &mp); currentMove != MOVE_NONE; currentMove = nextLegalOrderedMove(pos, &mp) {
 		if !pos.Capture(currentMove) {
 			continue
 		}
 
-		var st StateInfo
-		pos.DoMove(currentMove, &st)
-		score := -Quiescence(pos, ordered)
+		pos.DoMove(currentMove, searchState(ctx, pos))
+		score := -QuiescenceWithContext(ctx, pos, ordered)
 		pos.UndoMove(currentMove)
 
 		if score > bestScore {
@@ -151,27 +160,30 @@ type SearchResult struct {
 
 // ParallelSearch запускает поиск всех корневых ходов параллельно
 func (pos *PositionNG) ParallelSearch(depth uint8) (bestMove MoveNG, bestScore Value) {
-	clearSearch(pos)
+	ctx := newSearchContext()
+	clearSearch(ctx, pos)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 
 	bestScore = -int32(MATE_VALUE)
 	results := make([]SearchResult, 0)
 
-	mp := orderMovesByHistory(pos)
+	mp := orderMovesByHistory(pos, ctx)
 	for currentMove := nextLegalOrderedMove(pos, &mp); currentMove != MOVE_NONE; currentMove = nextLegalOrderedMove(pos, &mp) {
 
 		wg.Add(1)
 		go func(move MoveNG) {
 			defer wg.Done()
 
-			localPos := borrowPositionCopy(pos)
+			localCtx := borrowSearchContext()
+			defer releaseSearchContext(localCtx)
+			localPos := borrowPositionBranch(pos, localCtx)
 			defer releasePositionCopy(localPos)
 
-			var st StateInfo
-			localPos.DoMove(move, &st)
+			localPos.DoMove(move, searchState(localCtx, localPos))
 
-			_, score := localPos.SearchPosition_ab(depth - 1)
+			clearSearch(localCtx, localPos)
+			_, score := localPos.searchPositionAB(localCtx, depth-1)
 
 			localPos.UndoMove(move)
 
