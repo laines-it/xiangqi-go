@@ -2,20 +2,17 @@ package engine
 
 import "sync"
 
-type positionCopyOptions struct {
-}
-
 var positionCopyPool sync.Pool
 
 func copyPosition(pos *PositionNG) *PositionNG {
 	copied := &PositionNG{}
-	copyPositionInto(copied, pos, positionCopyOptions{})
+	copyPositionInto(copied, pos)
 	return copied
 }
 
 func borrowPositionCopy(src *PositionNG) *PositionNG {
 	if copied, ok := positionCopyPool.Get().(*PositionNG); ok {
-		copyPositionInto(copied, src, positionCopyOptions{})
+		copyPositionInto(copied, src)
 		return copied
 	}
 
@@ -42,16 +39,16 @@ func copyPositionBranchInto(dst, src *PositionNG, ctx *SearchContext) {
 	dst.St = ctx.copyStateStack(src.St)
 }
 
-func copyPositionInto(dst, src *PositionNG, opts positionCopyOptions) {
-	copyPositionIntoWithStack(dst, src, opts, dst.St)
+func copyPositionInto(dst, src *PositionNG) {
+	copyPositionIntoWithStack(dst, src, dst.St)
 }
 
-func copyPositionIntoWithStack(dst, src *PositionNG, opts positionCopyOptions, st StateInfoStack) {
+func copyPositionIntoWithStack(dst, src *PositionNG, st StateInfoStack) {
 	*dst = *src
-	dst.St = copyStateInfoStackInto(dst, st, src.St)
+	dst.St = copyStateInfoStackInto(st, src.St)
 }
 
-func copyStateInfoStackInto(pos *PositionNG, dst, src StateInfoStack) StateInfoStack {
+func copyStateInfoStackInto(dst, src StateInfoStack) StateInfoStack {
 	if len(src) == 0 {
 		if dst == nil {
 			return NewStateInfoStack()

@@ -69,7 +69,7 @@ func quiescenceABAbort(ctx *SearchContext, alpha, beta Value, pos *PositionNG, p
 		alpha = evalation
 	}
 
-	mp := orderNoisyMovesByHeuristics(pos, ctx)
+	mp := orderNoisyMovesByHeuristics(ctx)
 	for currentMove := nextLegalOrderedMove(pos, &mp); currentMove != MOVE_NONE; currentMove = nextLegalOrderedMove(pos, &mp) {
 		if abort != nil && abort.Load() {
 			return alpha
@@ -120,7 +120,7 @@ func QuiescenceYBWC(runCtx context.Context, search *SearchContext, alpha, beta V
 		alpha = evalation
 	}
 
-	mp := orderNoisyMovesByHeuristics(pos, search)
+	mp := orderNoisyMovesByHeuristics(search)
 	for currentMove := nextLegalOrderedMove(pos, &mp); currentMove != MOVE_NONE; currentMove = nextLegalOrderedMove(pos, &mp) {
 
 		select {
@@ -197,7 +197,7 @@ func negamaxABAbort(ctx *SearchContext, alpha, beta Value, pos *PositionNG, dept
 	var bestMove MoveNG
 	if pos.GamePly > 0 {
 		var scoreInt16 int16
-		scoreInt16, ttMove = readHashEntry(pos.St.Top().key, pos.St.Top().key2, int16(alpha), int16(beta), &bestMove, depth, uint8(pos.GamePly))
+		scoreInt16, ttMove = readHashEntry(pos.St.Top().key, pos.St.Top().key2, int16(alpha), int16(beta), depth, uint8(pos.GamePly))
 		score = int32(scoreInt16)
 		if score != int32(NO_HASH) && !pvNode {
 			return score
@@ -457,10 +457,11 @@ const (
 
 const NO_HASH int16 = 32767
 
-func readHashEntry(key, key2 Key, alpha, beta int16, bestMove *MoveNG, depth, ply uint8) (int16, MoveNG) {
+func readHashEntry(key, key2 Key, alpha, beta int16, depth, ply uint8) (int16, MoveNG) {
 	entry := &TT.Entries[key&TT.Mask]
 	data, ok := entry.Load()
 	if ok && data.Key == key && data.Key2 == key2 {
+		move := data.Move
 		if data.Depth >= depth {
 			score := data.Score
 			if score < -MATE_SCORE {
@@ -470,15 +471,16 @@ func readHashEntry(key, key2 Key, alpha, beta int16, bestMove *MoveNG, depth, pl
 				score -= int16(ply)
 			}
 			if data.Flag == TT_EXACT {
-				return score, data.Move
+				return score, move
 			}
 			if data.Flag == TT_ALPHA && score <= alpha {
-				return alpha, data.Move
+				return alpha, move
 			}
 			if data.Flag == TT_BETA && score >= beta {
-				return beta, data.Move
+				return beta, move
 			}
 		}
+		return NO_HASH, move
 	}
 	return NO_HASH, MOVE_NONE
 }

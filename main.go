@@ -193,8 +193,8 @@ func startMatch(name1 string, engine1 func(i int, pos *engine.PositionNG, depth 
 }
 
 func isFinished(value engine.Value) bool {
-	return value <= -engine.VALUE_KNOWN_WIN+1 ||
-		value >= engine.VALUE_KNOWN_WIN-1
+	return value <= -engine.VALUE_MATE+1 ||
+		value >= engine.VALUE_MATE-1
 }
 
 func test_speed() {

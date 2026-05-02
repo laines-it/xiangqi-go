@@ -42,7 +42,7 @@ func NegamaxWithContext(ctx *SearchContext, depth uint8, pos *PositionNG, ordere
 	var bestMove MoveNG
 	if pos.GamePly > 0 {
 		var scoreInt16 int16
-		scoreInt16, _ = readHashEntry(pos.St.Top().key, pos.St.Top().key2, 0, 0, &bestMove, depth, uint8(pos.GamePly))
+		scoreInt16, _ = readHashEntry(pos.St.Top().key, pos.St.Top().key2, 0, 0, depth, uint8(pos.GamePly))
 		if scoreInt16 != int16(NO_HASH) {
 			return int32(scoreInt16)
 		}
@@ -133,7 +133,7 @@ func QuiescenceWithContext(ctx *SearchContext, pos *PositionNG, ordered bool) (b
 
 	bestScore = evalation
 
-	mp := orderNoisyMovesByHeuristics(pos, ctx)
+	mp := orderNoisyMovesByHeuristics(ctx)
 	for currentMove := nextLegalOrderedMove(pos, &mp); currentMove != MOVE_NONE; currentMove = nextLegalOrderedMove(pos, &mp) {
 		if !pos.Capture(currentMove) {
 			continue
@@ -168,7 +168,7 @@ func (pos *PositionNG) ParallelSearch(depth uint8) (bestMove MoveNG, bestScore V
 	bestScore = -int32(MATE_VALUE)
 	results := make([]SearchResult, 0)
 
-	mp := orderMovesByHistory(pos, ctx)
+	mp := orderMovesByHistory(ctx)
 	for currentMove := nextLegalOrderedMove(pos, &mp); currentMove != MOVE_NONE; currentMove = nextLegalOrderedMove(pos, &mp) {
 
 		wg.Add(1)

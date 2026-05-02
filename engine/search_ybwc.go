@@ -65,11 +65,11 @@ func isYBWCHelper(ctx context.Context) bool {
 	return helper
 }
 
-func ybwcReadHashEntry(key, key2 Key, alpha, beta int16, bestMove *MoveNG, depth, ply uint8) (int16, MoveNG) {
+func ybwcReadHashEntry(key, key2 Key, alpha, beta int16, depth, ply uint8) (int16, MoveNG) {
 	ybwcTTMu.Lock()
 	defer ybwcTTMu.Unlock()
 
-	return readHashEntry(key, key2, alpha, beta, bestMove, depth, ply)
+	return readHashEntry(key, key2, alpha, beta, depth, ply)
 }
 
 func ybwcWriteHashEntry(key, key2 Key, score int16, bestMove MoveNG, depth, ply uint8, flag int8) {
@@ -80,50 +80,29 @@ func ybwcWriteHashEntry(key, key2 Key, score int16, bestMove MoveNG, depth, ply 
 }
 
 func ybwcProbeTT(pos *PositionNG, depth uint8, alpha, beta Value) ybwcTTProbe {
-	ybwcTTMu.Lock()
-	defer ybwcTTMu.Unlock()
-
-	entry := &TT.Entries[pos.St.Top().key&TT.Mask]
-	data, ok := entry.Load()
-	if !ok || data.Key != pos.St.Top().key || data.Key2 != pos.St.Top().key2 {
+	score, move := ybwcReadHashEntry(
+		pos.St.Top().key,
+		pos.St.Top().key2,
+		int16(alpha),
+		int16(beta),
+		depth,
+		uint8(pos.GamePly),
+	)
+	if !IsOKMove(move) {
 		return ybwcTTProbe{move: MOVE_NONE}
 	}
 
-	probe := ybwcTTProbe{move: data.Move}
-	if data.Depth < depth {
+	probe := ybwcTTProbe{move: move}
+	if score == NO_HASH {
 		return probe
 	}
 
-	score := data.Score
-	ply := int16(pos.GamePly)
-	if score < -MATE_SCORE {
-		score += ply
-	}
-	if score > MATE_SCORE {
-		score -= ply
-	}
-
-	value := Value(score)
-	switch data.Flag {
-	case TT_EXACT:
-		probe.score = value
-		probe.hit = true
-	case TT_BETA:
-		if value >= beta {
-			probe.score = value
-			probe.hit = true
-		}
-	case TT_ALPHA:
-		if value <= alpha {
-			probe.score = value
-			probe.hit = true
-		}
-	}
-
+	probe.score = Value(score)
+	probe.hit = true
 	return probe
 }
 
-func ybwcEnterNode(ctx context.Context, search *SearchContext, pos *PositionNG, node searchNode, depth uint8) (searchNode, bool, Value) {
+func ybwcEnterNode(ctx context.Context, pos *PositionNG, node searchNode, depth uint8) (searchNode, bool, Value) {
 	select {
 	case <-ctx.Done():
 		return node, true, node.alpha
@@ -157,16 +136,6 @@ func ybwcEnterNode(ctx context.Context, search *SearchContext, pos *PositionNG, 
 	}
 
 	return node, false, 0
-}
-
-func ybwcOrderedLegalMoves(pos *PositionNG, search *SearchContext, ttMove MoveNG, moves []MoveNG) int {
-	mp := orderMovesByHeuristics(pos, search, ttMove)
-	size := 0
-	for move := nextLegalOrderedMove(pos, &mp); move != MOVE_NONE; move = nextLegalOrderedMove(pos, &mp) {
-		moves[size] = move
-		size++
-	}
-	return size
 }
 
 func ybwcSearchChild(ctx context.Context, search *SearchContext, pos *PositionNG, move MoveNG, depth uint8, alpha, beta Value) Value {
@@ -231,7 +200,7 @@ func ybwcStoreBound(pos *PositionNG, depth uint8, score, oldAlpha, beta Value, b
 	ybwcWriteHashEntry(pos.St.Top().key, pos.St.Top().key2, int16(score), bestMove, depth, uint8(pos.GamePly), flag)
 }
 
-func ybwcSearchParallelSiblings(ctx context.Context, search *SearchContext, pos *PositionNG, moves []MoveNG, depth uint8, node searchNode, bestScore Value, bestMove MoveNG) (searchNode, Value, MoveNG, bool) {
+func ybwcSearchParallelSiblings(ctx context.Context, search *SearchContext, pos *PositionNG, mp *MovePicker, depth uint8, node searchNode, bestScore Value, bestMove MoveNG) (searchNode, Value, MoveNG, bool) {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 
@@ -263,7 +232,7 @@ func ybwcSearchParallelSiblings(ctx context.Context, search *SearchContext, pos 
 		return node.alpha, node.beta, bestScore
 	}
 
-	for _, move := range moves {
+	for move := nextLegalOrderedMove(pos, mp); move != MOVE_NONE; move = nextLegalOrderedMove(pos, mp) {
 		localAlpha, localBeta, localBestScore := searchWindow()
 		localMove := move
 
@@ -306,7 +275,7 @@ func NegamaxYBWC(ctx context.Context, pos *PositionNG, node searchNode, depth ui
 }
 
 func negamaxYBWC(ctx context.Context, search *SearchContext, pos *PositionNG, node searchNode, depth uint8, doNullMove bool) Value {
-	node, done, score := ybwcEnterNode(ctx, search, pos, node, depth)
+	node, done, score := ybwcEnterNode(ctx, pos, node, depth)
 	if done {
 		return score
 	}
@@ -324,13 +293,12 @@ func negamaxYBWC(ctx context.Context, search *SearchContext, pos *PositionNG, no
 		return probe.score
 	}
 
-	var moves [MAX_MOVES]MoveNG
-	moveCount := ybwcOrderedLegalMoves(pos, search, probe.move, moves[:])
-	if moveCount == 0 {
+	mp := orderMovesByHeuristics(pos, search, probe.move)
+	firstMove := nextLegalOrderedMove(pos, &mp)
+	if firstMove == MOVE_NONE {
 		return -Value(MATE_VALUE) + Value(pos.GamePly)
 	}
 
-	firstMove := moves[0]
 	bestScore := ybwcSearchChild(ctx, search, pos, firstMove, depth, node.alpha, node.beta)
 	if ctx.Err() != nil {
 		return node.alpha
@@ -349,9 +317,8 @@ func negamaxYBWC(ctx context.Context, search *SearchContext, pos *PositionNG, no
 		node.alpha = bestScore
 	}
 
-	if moveCount > 1 && depth < ybwcMinSplitDepth {
-		for i := 1; i < moveCount; i++ {
-			move := moves[i]
+	if depth < ybwcMinSplitDepth {
+		for move := nextLegalOrderedMove(pos, &mp); move != MOVE_NONE; move = nextLegalOrderedMove(pos, &mp) {
 			score := ybwcSearchSibling(ctx, search, pos, move, depth, node.alpha, node.beta, bestScore)
 			if ctx.Err() != nil {
 				return oldAlpha
@@ -376,9 +343,9 @@ func negamaxYBWC(ctx context.Context, search *SearchContext, pos *PositionNG, no
 		if bestScore >= node.beta {
 			ybwcRecordCutoff(ctx, search, pos, bestMove)
 		}
-	} else if moveCount > 1 {
+	} else {
 		var aborted bool
-		node, bestScore, bestMove, aborted = ybwcSearchParallelSiblings(ctx, search, pos, moves[1:moveCount], depth, node, bestScore, bestMove)
+		node, bestScore, bestMove, aborted = ybwcSearchParallelSiblings(ctx, search, pos, &mp, depth, node, bestScore, bestMove)
 		if aborted {
 			return oldAlpha
 		}

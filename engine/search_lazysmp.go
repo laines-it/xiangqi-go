@@ -120,11 +120,8 @@ func (pos *PositionNG) searchPositionLazySMPSynchronized(ctx *SearchContext, dep
 }
 
 func (opts LazySMPOptions) normalized() LazySMPOptions {
-	if opts.Threads <= 0 {
-		opts.Threads = runtime.GOMAXPROCS(0)
-	}
 	if opts.Threads < 1 {
-		opts.Threads = 1
+		opts.Threads = runtime.GOMAXPROCS(0)
 	}
 	if opts.MultiPV < 1 {
 		opts.MultiPV = 1
@@ -296,7 +293,7 @@ func (thread *lazySMPThreadData) searchRoot(depth uint8, alpha, beta Value, abor
 
 func lazySMPGenerateRootMoves(pos *PositionNG, ctx *SearchContext) []LazySMPRootMove {
 	rootMoves := make([]LazySMPRootMove, 0, MAX_MOVES)
-	mp := orderMovesByHistory(pos, ctx)
+	mp := orderMovesByHistory(ctx)
 	for move := nextLegalOrderedMove(pos, &mp); move != MOVE_NONE; move = nextLegalOrderedMove(pos, &mp) {
 		rootMoves = append(rootMoves, LazySMPRootMove{
 			Move:  move,

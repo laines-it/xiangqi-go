@@ -62,7 +62,6 @@ func BenchmarkLazySMPSearchAverage(b *testing.B) {
 		tc := tc
 		b.Run(tc.name, func(b *testing.B) {
 			for _, threads := range threadCounts {
-				threads := threads
 				b.Run("threads_"+itoaBenchmark(threads), func(b *testing.B) {
 					benchmarkLazySMPSearch(b, tc.fen, tc.depth, threads)
 				})
@@ -75,12 +74,12 @@ func BenchmarkSequentialSearchMoves(b *testing.B) {
 	for _, depth := range sequentialSearchBenchmarkDepths {
 		b.Run("depth_"+itoaBenchmark(int(depth)), func(b *testing.B) {
 			b.Run("AlphaBeta", func(b *testing.B) {
-				benchmarkSequentialSearchMoves(b, depth, func(pos *PositionNG) (MoveNG, Value) {
+				benchmarkSequentialSearchMoves(b, func(pos *PositionNG) (MoveNG, Value) {
 					return pos.SearchPosition_ab(depth)
 				})
 			})
 			b.Run("YBWC", func(b *testing.B) {
-				benchmarkSequentialSearchMoves(b, depth, func(pos *PositionNG) (MoveNG, Value) {
+				benchmarkSequentialSearchMoves(b, func(pos *PositionNG) (MoveNG, Value) {
 					return pos.SearchPositionYBWC(depth)
 				})
 			})
@@ -88,7 +87,7 @@ func BenchmarkSequentialSearchMoves(b *testing.B) {
 				for _, threads := range sequentialSearchBenchmarkLazySMPThreads {
 					threads := threads
 					b.Run("threads_"+itoaBenchmark(threads), func(b *testing.B) {
-						benchmarkSequentialSearchMoves(b, depth, func(pos *PositionNG) (MoveNG, Value) {
+						benchmarkSequentialSearchMoves(b, func(pos *PositionNG) (MoveNG, Value) {
 							return pos.SearchPositionLazySMP(depth, threads)
 						})
 					})
@@ -146,7 +145,7 @@ func BenchmarkSearchCountersFixedFEN(b *testing.B) {
 	}
 }
 
-func benchmarkSequentialSearchMoves(b *testing.B, depth uint8, search func(*PositionNG) (MoveNG, Value)) {
+func benchmarkSequentialSearchMoves(b *testing.B, search func(*PositionNG) (MoveNG, Value)) {
 	b.Helper()
 	b.ReportAllocs()
 	b.StopTimer()

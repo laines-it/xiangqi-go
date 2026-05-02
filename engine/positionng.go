@@ -379,11 +379,12 @@ func (pos *PositionNG) GenerateMovesWithoutKing(us Color, typ GenType, movieList
 func (pos *PositionNG) GenerateAll(us Color, typ GenType, movieList []MoveNG) (size uint8) {
 	ksq := pos.KingSQ[us]
 	var target Bitboard
-	if typ == PSEUDO_LEGAL {
+	switch typ {
+	case PSEUDO_LEGAL:
 		target = pos.Pieces(us).Not()
-	} else if typ == CAPTURES {
+	case CAPTURES:
 		target = pos.Pieces(notColor(us))
-	} else { // QUIETS || QUIET_CHECKS
+	default: // QUIETS || QUIET_CHECKS
 		target = pos.PiecesAllColor(ALL_PIECES).Not()
 	}
 	size = pos.GenerateMovesWithoutKing(us, typ, movieList, target)
@@ -413,7 +414,8 @@ func (pos *PositionNG) Generate(typ GenType, movieList []MoveNG) (size uint8) {
 	//   static_assert(Type != LEGAL, "Unsupported type in generate()");
 	us := pos.SideToMove
 
-	if typ == EVASIONS {
+	switch typ {
+	case EVASIONS:
 		return pos.GenerateEVASIONS(movieList)
 	}
 	if typ == LEGAL {
@@ -458,12 +460,13 @@ func (pos *PositionNG) GenerateEVASIONS(movieList []MoveNG) (size uint8) {
 		if hurdle != (Bitboard{}) {
 			hurdleSq := PopLsb(&hurdle)
 			pt = TypeOf(pos.PieceOn(hurdleSq))
-			if pt == PAWN {
+			switch pt {
+			case PAWN:
 				b = PawnAttacks[us][hurdleSq].And(LineBB[checksq][hurdleSq].Not().And(pos.Pieces(us).Not()))
-			} else if pt == CANNON {
+			case CANNON:
 				b = (AttacksBB(ROOK, hurdleSq, pos.PiecesAllColor(ALL_PIECES)).And(LineBB[checksq][hurdleSq].Not()).And(pos.PiecesAllColor(ALL_PIECES).Not())).Or(
 					AttacksBB(CANNON, hurdleSq, pos.PiecesAllColor(ALL_PIECES)).And(pos.Pieces(notColor(us))))
-			} else {
+			default:
 				b = AttacksBB(pt, hurdleSq, pos.PiecesAllColor(ALL_PIECES)).And(LineBB[checksq][hurdleSq].Not()).And(pos.Pieces(us).Not())
 			}
 			for b != (Bitboard{}) {

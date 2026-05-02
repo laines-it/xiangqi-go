@@ -7,26 +7,26 @@ type moveOrderingHints struct {
 	killer2    MoveNG
 }
 
-func newMoveOrdering(pos *PositionNG, ctx *SearchContext, hints moveOrderingHints) MovePicker {
+func newMoveOrdering(ctx *SearchContext, hints moveOrderingHints) MovePicker {
 	var mp MovePicker
 	InitalizeMovePicker(&mp, hints.skipQuiets, hints.tableMove, hints.killer1, hints.killer2, &ctx.History)
 	return mp
 }
 
 func orderMovesByHeuristics(pos *PositionNG, ctx *SearchContext, ttMove MoveNG) MovePicker {
-	return newMoveOrdering(pos, ctx, moveOrderingHints{
+	return newMoveOrdering(ctx, moveOrderingHints{
 		tableMove: ttMove,
 		killer1:   ctx.Killers[pos.GamePly][0],
 		killer2:   ctx.Killers[pos.GamePly][1],
 	})
 }
 
-func orderMovesByHistory(pos *PositionNG, ctx *SearchContext) MovePicker {
-	return newMoveOrdering(pos, ctx, moveOrderingHints{})
+func orderMovesByHistory(ctx *SearchContext) MovePicker {
+	return newMoveOrdering(ctx, moveOrderingHints{})
 }
 
-func orderNoisyMovesByHeuristics(pos *PositionNG, ctx *SearchContext) MovePicker {
-	return newMoveOrdering(pos, ctx, moveOrderingHints{
+func orderNoisyMovesByHeuristics(ctx *SearchContext) MovePicker {
+	return newMoveOrdering(ctx, moveOrderingHints{
 		skipQuiets: true,
 	})
 }
