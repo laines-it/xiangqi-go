@@ -28,27 +28,6 @@ type ybwcTTProbe struct {
 	hit   bool
 }
 
-type ybwcSplitPoint struct {
-	ctx    context.Context
-	cancel context.CancelFunc
-
-	pos   *PositionNG
-	depth uint8
-	beta  Value
-
-	moves       []MoveNG
-	nextMoveIdx int
-	activeTasks int
-	cancelled   bool
-
-	alpha     Value
-	bestScore Value
-	bestMove  MoveNG
-
-	lock sync.Mutex
-	done *sync.Cond
-}
-
 func newYBWCContext() context.Context {
 	workers := max(runtime.GOMAXPROCS(0)-1, 0)
 
@@ -180,13 +159,14 @@ func ybwcEnterNode(ctx context.Context, pos *PositionNG, node searchNode, depth 
 	return node, false, 0
 }
 
-func ybwcOrderedLegalMoves(pos *PositionNG, ttMove MoveNG) []MoveNG {
+func ybwcOrderedLegalMoves(pos *PositionNG, ttMove MoveNG, moves []MoveNG) int {
 	mp := orderMovesByHeuristics(pos, ttMove)
-	moves := make([]MoveNG, 0, MAX_MOVES)
+	size := 0
 	for move := nextLegalOrderedMove(pos, &mp); move != MOVE_NONE; move = nextLegalOrderedMove(pos, &mp) {
-		moves = append(moves, move)
+		moves[size] = move
+		size++
 	}
-	return moves
+	return size
 }
 
 func ybwcSearchChild(ctx context.Context, pos *PositionNG, move MoveNG, depth uint8, alpha, beta Value) Value {
@@ -198,23 +178,21 @@ func ybwcSearchChild(ctx context.Context, pos *PositionNG, move MoveNG, depth ui
 	return score
 }
 
-func ybwcSearchSplitMove(ctx context.Context, split *ybwcSplitPoint, move MoveNG, localAlpha, localBeta Value) Value {
-	localPos := split.pos.DeepCopy()
-
+func ybwcSearchSibling(ctx context.Context, localPos *PositionNG, move MoveNG, depth uint8, localAlpha, localBeta, localBestScore Value) Value {
 	var st StateInfo
 	localPos.DoMove(move, &st)
 
-	score := -NegamaxYBWC(ctx, localPos, searchNode{-localAlpha - 1, -localAlpha}, split.depth-1, true)
+	score := -NegamaxYBWC(ctx, localPos, searchNode{-localAlpha - 1, -localAlpha}, depth-1, true)
 	if ctx.Err() != nil {
 		localPos.UndoMove(move)
-		return localAlpha
+		return localBestScore
 	}
 
 	if score > localAlpha && score < localBeta {
-		score = -NegamaxYBWC(ctx, localPos, searchNode{-localBeta, -localAlpha}, split.depth-1, true)
+		score = -NegamaxYBWC(ctx, localPos, searchNode{-localBeta, -localAlpha}, depth-1, true)
 		if ctx.Err() != nil {
 			localPos.UndoMove(move)
-			return localAlpha
+			return localBestScore
 		}
 	}
 
@@ -255,113 +233,6 @@ func ybwcStoreBound(pos *PositionNG, depth uint8, score, oldAlpha, beta Value, b
 	ybwcWriteHashEntry(pos.St.Top().key, pos.St.Top().key2, int16(score), bestMove, depth, uint8(pos.GamePly), flag)
 }
 
-func newYBWCSplitPoint(ctx context.Context, pos *PositionNG, depth uint8, alpha, beta, bestScore Value, bestMove MoveNG, moves []MoveNG) *ybwcSplitPoint {
-	splitCtx, cancel := context.WithCancel(ctx)
-	split := &ybwcSplitPoint{
-		ctx:       splitCtx,
-		cancel:    cancel,
-		pos:       pos,
-		depth:     depth,
-		alpha:     alpha,
-		beta:      beta,
-		bestScore: bestScore,
-		bestMove:  bestMove,
-		moves:     moves,
-	}
-	split.done = sync.NewCond(&split.lock)
-	return split
-}
-
-func (split *ybwcSplitPoint) finishedLocked() bool {
-	return split.activeTasks == 0 && (split.cancelled || split.nextMoveIdx >= len(split.moves))
-}
-
-func HelpSearchSplitPoint(split *ybwcSplitPoint) {
-	for {
-		split.lock.Lock()
-
-		if split.cancelled {
-			if split.activeTasks == 0 {
-				split.done.Broadcast()
-			}
-			split.lock.Unlock()
-			return
-		}
-
-		if split.nextMoveIdx >= len(split.moves) {
-			if split.activeTasks == 0 {
-				split.done.Broadcast()
-			}
-			split.lock.Unlock()
-			return
-		}
-
-		move := split.moves[split.nextMoveIdx]
-		split.nextMoveIdx++
-		split.activeTasks++
-		localAlpha := split.alpha
-		localBeta := split.beta
-
-		split.lock.Unlock()
-
-		score := ybwcSearchSplitMove(ybwcHelperContext(split.ctx), split, move, localAlpha, localBeta)
-
-		split.lock.Lock()
-		split.activeTasks--
-
-		if !split.cancelled && score > split.bestScore {
-			split.bestScore = score
-			split.bestMove = move
-			if score > split.alpha {
-				split.alpha = score
-			}
-			if score >= split.beta {
-				split.cancelled = true
-				split.cancel()
-			}
-		}
-
-		if split.finishedLocked() {
-			split.done.Broadcast()
-		}
-		split.lock.Unlock()
-	}
-}
-
-func PublishSplitPoint(ctx context.Context, split *ybwcSplitPoint) *sync.WaitGroup {
-	var wg sync.WaitGroup
-	for range split.moves {
-		releaseWorker, ok := tryAcquireYBWCWorker(ctx, split.depth)
-		if !ok {
-			break
-		}
-
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			defer releaseWorker()
-
-			HelpSearchSplitPoint(split)
-		}()
-	}
-
-	return &wg
-}
-
-func WaitUntilSplitPointFinished(split *ybwcSplitPoint) {
-	split.lock.Lock()
-	defer split.lock.Unlock()
-
-	for !split.finishedLocked() {
-		split.done.Wait()
-	}
-}
-
-func UnpublishSplitPoint(split *ybwcSplitPoint, workers *sync.WaitGroup) {
-	split.cancel()
-	workers.Wait()
-}
-
 func NegamaxYBWCUnordered(ctx context.Context, pos *PositionNG, node searchNode, depth uint8, split bool) Value {
 	return NegamaxYBWC(ctx, pos, node, depth, true)
 }
@@ -385,8 +256,9 @@ func NegamaxYBWC(ctx context.Context, pos *PositionNG, node searchNode, depth ui
 		return probe.score
 	}
 
-	moves := ybwcOrderedLegalMoves(pos, probe.move)
-	if len(moves) == 0 {
+	var moves [MAX_MOVES]MoveNG
+	moveCount := ybwcOrderedLegalMoves(pos, probe.move, moves[:])
+	if moveCount == 0 {
 		return -Value(MATE_VALUE) + Value(pos.GamePly)
 	}
 
@@ -409,17 +281,64 @@ func NegamaxYBWC(ctx context.Context, pos *PositionNG, node searchNode, depth ui
 		node.alpha = bestScore
 	}
 
-	if len(moves) > 1 {
-		split := newYBWCSplitPoint(ctx, pos, depth, node.alpha, node.beta, bestScore, bestMove, moves[1:])
-		workers := PublishSplitPoint(ctx, split)
+	if moveCount > 1 && !isYBWCHelper(ctx) {
+		var wg sync.WaitGroup
+		var mu sync.Mutex
 
-		HelpSearchSplitPoint(split)
-		WaitUntilSplitPointFinished(split)
-		UnpublishSplitPoint(split, workers)
+		childCtx, cancel := context.WithCancel(ybwcHelperContext(ctx))
+		defer cancel()
 
-		bestScore = split.bestScore
-		bestMove = split.bestMove
-		node.alpha = split.alpha
+		updateBest := func(move MoveNG, score Value) {
+			mu.Lock()
+			defer mu.Unlock()
+
+			if childCtx.Err() != nil || score <= bestScore {
+				return
+			}
+
+			bestScore = score
+			bestMove = move
+			if score > node.alpha {
+				node.alpha = score
+			}
+			if score >= node.beta {
+				cancel()
+			}
+		}
+
+		searchWindow := func() (Value, Value, Value) {
+			mu.Lock()
+			defer mu.Unlock()
+
+			return node.alpha, node.beta, bestScore
+		}
+
+		for i := 1; i < moveCount; i++ {
+			move := moves[i]
+			localAlpha, localBeta, localBestScore := searchWindow()
+			localMove := move
+
+			releaseWorker, ok := tryAcquireYBWCWorker(childCtx, depth)
+			if !ok {
+				score := ybwcSearchSibling(childCtx, pos, localMove, depth, localAlpha, localBeta, localBestScore)
+				updateBest(localMove, score)
+				if childCtx.Err() != nil {
+					break
+				}
+				continue
+			}
+
+			localPos := borrowPositionCopy(pos)
+			wg.Go(func() {
+				defer releaseWorker()
+				defer releasePositionCopy(localPos)
+
+				score := ybwcSearchSibling(childCtx, localPos, localMove, depth, localAlpha, localBeta, localBestScore)
+				updateBest(localMove, score)
+			})
+		}
+
+		wg.Wait()
 
 		if ctx.Err() != nil {
 			return oldAlpha

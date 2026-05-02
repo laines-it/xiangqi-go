@@ -80,7 +80,7 @@ func main() {
 	// fmt.Println(pos.String(light))
 
 	// Match example
-	// startMatch("YBWC", GetBestMoveYBWC, 6, "Alpha-Beta", GetBestMoveAb, 6)
+	startMatch("YBWC", GetBestMoveYBWC, 2, "LazySMP", GetBestMoveLazy5, 6)
 
 	// Accuracy example
 	// name := "YBWC"
@@ -163,25 +163,20 @@ func startMatch(name1 string, engine1 func(i int, pos *engine.PositionNG, depth 
 			}
 			if i%2 == 0 {
 				value = engine1(i, &pos, depth1)
-				fmt.Printf("Engine %s Score: %d\n", name1, value)
+				fmt.Printf("%s Score: %d\n", name1, value)
 			} else {
 				value = engine2(i, &pos, depth2)
-				fmt.Printf("Engine %s Score: %d\n", name2, value)
+				fmt.Printf("%s Score: %d\n", name2, value)
 			}
 			fmt.Println(pos.String(true))
 			i++
 		}
-		if value >= 0 {
+		if i%2 == 0 {
 			result += 1
-		} else {
-			result -= 1
-		}
-		if result > 0 {
-			fmt.Printf("Game %d: Победитель: %s\n", gameNumber, name1)
-		} else if result < 0 {
 			fmt.Printf("Game %d: Победитель: %s\n", gameNumber, name2)
 		} else {
-			fmt.Printf("Game %d: Ничья\n", gameNumber)
+			result -= 1
+			fmt.Printf("Game %d: Победитель: %s\n", gameNumber, name1)
 		}
 		gameNumber++
 		pos.Set(initialFen)

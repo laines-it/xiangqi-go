@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"fmt"
 	"runtime"
 	"sync/atomic"
 )
@@ -121,7 +120,6 @@ func (pos *PositionNG) searchPositionLazySMPSynchronized(depth uint8, opts LazyS
 func (opts LazySMPOptions) normalized() LazySMPOptions {
 	if opts.Threads <= 0 {
 		opts.Threads = runtime.GOMAXPROCS(0)
-		fmt.Println("GOMAXPROCS:", opts.Threads)
 	}
 	if opts.Threads < 1 {
 		opts.Threads = 1
@@ -378,53 +376,14 @@ func lazySMPBuildPVFromSearch(root *LazySMPRootMove, rootMove MoveNG, searchLine
 }
 
 func lazySMPCopyPosition(pos *PositionNG) *PositionNG {
-	copied := &PositionNG{}
-	*copied = *pos
-
-	if len(pos.St) == 0 {
-		copied.St = NewStateInfoStack()
-		return copied
-	}
-
-	copied.St = make(StateInfoStack, len(pos.St))
-	for i, st := range pos.St {
-		if st == nil {
-			continue
-		}
-		copiedSt := &StateInfo{}
-		*copiedSt = *st
-		copied.St[i] = copiedSt
-	}
-
-	return copied
+	return copyPosition(pos)
 }
 
 func lazySMPSyncRootPosition(dst, src *PositionNG) {
-	history := dst.History
-	killers := dst.Killers
-	st := dst.St
-
-	*dst = *src
-	dst.History = history
-	dst.Killers = killers
-	dst.Nodes = 0
-
-	if cap(st) < len(src.St) {
-		st = make(StateInfoStack, len(src.St))
-	} else {
-		st = st[:len(src.St)]
-	}
-	for i, srcSt := range src.St {
-		if srcSt == nil {
-			st[i] = nil
-			continue
-		}
-		if st[i] == nil {
-			st[i] = &StateInfo{}
-		}
-		*st[i] = *srcSt
-	}
-	dst.St = st
+	copyPositionInto(dst, src, positionCopyOptions{
+		preserveHeuristics: true,
+		resetNodes:         true,
+	})
 }
 
 func lazySMPPublishMainPV(thread *lazySMPThreadData) {

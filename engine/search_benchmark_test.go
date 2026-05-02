@@ -108,7 +108,6 @@ func BenchmarkSearchAccuracyFixedFEN(b *testing.B) {
 			})
 			b.Run("LazySMP", func(b *testing.B) {
 				for _, threads := range sequentialSearchBenchmarkLazySMPThreads {
-					threads := threads
 					b.Run("threads_"+itoaBenchmark(threads), func(b *testing.B) {
 						benchmarkSearchAccuracyFixedFEN(b, depth, func(pos *PositionNG) (MoveNG, Value) {
 							return pos.SearchPositionLazySMP(depth, threads)

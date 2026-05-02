@@ -165,7 +165,8 @@ func (pos *PositionNG) ParallelSearch(depth uint8) (bestMove MoveNG, bestScore V
 		go func(move MoveNG) {
 			defer wg.Done()
 
-			localPos := pos.DeepCopy()
+			localPos := borrowPositionCopy(pos)
+			defer releasePositionCopy(localPos)
 
 			var st StateInfo
 			localPos.DoMove(move, &st)
@@ -193,25 +194,5 @@ func (pos *PositionNG) ParallelSearch(depth uint8) (bestMove MoveNG, bestScore V
 }
 
 func (pos *PositionNG) DeepCopy() *PositionNG {
-	newPos := &PositionNG{}
-
-	*newPos = *pos
-
-	activeSize := pos.GamePly + 1
-	if activeSize > 0 && activeSize <= len(pos.St) {
-		newPos.St = make(StateInfoStack, activeSize)
-		for i := 0; i < activeSize; i++ {
-			if pos.St[i] != nil {
-				newSt := &StateInfo{}
-				*newSt = *pos.St[i]
-				newPos.St[i] = newSt
-			}
-		}
-	} else {
-		newPos.St = make(StateInfoStack, 0)
-	}
-
-	// History — разделяемая, оставляем как есть
-
-	return newPos
+	return copyPosition(pos)
 }
