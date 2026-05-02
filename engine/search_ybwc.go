@@ -379,6 +379,9 @@ func NegamaxYBWC(ctx context.Context, pos *PositionNG, node searchNode, depth ui
 	oldAlpha := node.alpha
 	probe := ybwcProbeTT(pos, depth, node.alpha, node.beta)
 	if probe.hit {
+		if !isYBWCHelper(ctx) && IsOKMove(probe.move) && pos.Legal(probe.move) {
+			StorePvMove(probe.move, pos.GamePly)
+		}
 		return probe.score
 	}
 
@@ -437,5 +440,14 @@ func (pos *PositionNG) SearchPositionYBWC(depth uint8) (bestMove MoveNG, score V
 	clearSearch(pos)
 	ctx := newYBWCContext()
 	score = NegamaxYBWC(ctx, pos, searchNode{-VALUE_INFINITE, VALUE_INFINITE}, depth, false)
-	return PvTable[0], score
+	bestMove = PvTable[0]
+	if !IsOKMove(bestMove) || !pos.Legal(bestMove) {
+		var moves [MAX_MOVES]MoveNG
+		size := pos.GenerateLEGAL(moves[:])
+		if size > 0 {
+			bestMove = moves[0]
+			StorePvMove(bestMove, 0)
+		}
+	}
+	return bestMove, score
 }
