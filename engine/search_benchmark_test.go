@@ -137,11 +137,9 @@ func BenchmarkSearchCountersFixedFEN(b *testing.B) {
 					return pos.SearchPositionYBWC(depth)
 				})
 			})
-			b.Run("LazySMP", func(b *testing.B) {
-				b.Run("threads_"+itoaBenchmark(sequentialSearchBenchmarkLazySMPThread), func(b *testing.B) {
-					benchmarkSearchCountersFixedFEN(b, func(pos *PositionNG) (MoveNG, Value) {
-						return pos.SearchPositionLazySMP(depth, sequentialSearchBenchmarkLazySMPThread)
-					})
+			b.Run("LazySMP_threads_2", func(b *testing.B) {
+				benchmarkSearchCountersFixedFEN(b, func(pos *PositionNG) (MoveNG, Value) {
+					return pos.SearchPositionLazySMP(depth, sequentialSearchBenchmarkLazySMPThread)
 				})
 			})
 		})
