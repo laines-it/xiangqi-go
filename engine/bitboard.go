@@ -446,6 +446,41 @@ func (m *Magic) Index(occupied Bitboard) uint64 {
 	return occupied.And(m.mask).MulWrap(m.magic).Rsh(m.shift).Val64()
 }
 
+type MagicDebugInfo struct {
+	MaskPopcount  uint
+	Shift         uint
+	TableVariants uint64
+	Magic         Bitboard
+	Index         uint64
+}
+
+func MagicInfo(pt PieceType, s Square, occupied Bitboard) MagicDebugInfo {
+	var m *Magic
+	switch pt {
+	case ROOK:
+		m = &RookMagics[s]
+	case CANNON:
+		m = &CannonMagics[s]
+	case BISHOP:
+		m = &BishopMagics[s]
+	case KNIGHT:
+		m = &KnightMagics[s]
+	case KNIGHT_TO:
+		m = &KnightToMagics[s]
+	default:
+		panic(pt)
+	}
+
+	maskPopcount := m.mask.PopCount()
+	return MagicDebugInfo{
+		MaskPopcount:  maskPopcount,
+		Shift:         m.shift,
+		TableVariants: uint64(1) << maskPopcount,
+		Magic:         m.magic,
+		Index:         m.Index(occupied),
+	}
+}
+
 func SlidingAttack(sq Square, occupied Bitboard, pt PieceType) (attack Bitboard) {
 	if pt != ROOK && pt != CANNON {
 		panic(pt)

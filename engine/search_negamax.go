@@ -15,11 +15,8 @@ func negamaxWithContext(ctx *SearchContext, depth uint8, pos *PositionNG, move M
 		bestMove = move
 		StorePvMove(move, pos.GamePly)
 
-		// store history moves
 		if !pos.Capture(move) {
-			mFrom := FromSQ(move)
-			mTo := ToSQ(move)
-			ctx.History[pos.SideToMove][mFrom][mTo] += int32(depth)
+			updateQuietHistory(&ctx.History, move, pos.SideToMove, depth)
 		}
 	}
 
@@ -66,7 +63,7 @@ func NegamaxWithContext(ctx *SearchContext, depth uint8, pos *PositionNG, ordere
 
 	// loop over moves
 	if ordered {
-		mp := orderMovesByHeuristics(pos, ctx, bestMove)
+		mp := orderMovesByHeuristicsForDepth(pos, ctx, bestMove, depth)
 		for currentMove := nextLegalOrderedMove(pos, &mp); currentMove != MOVE_NONE; currentMove = nextLegalOrderedMove(pos, &mp) {
 			legalMoves++
 			move, score := negamaxWithContext(ctx, depth, pos, currentMove, bestScore, ordered)
@@ -93,11 +90,8 @@ func NegamaxWithContext(ctx *SearchContext, depth uint8, pos *PositionNG, ordere
 				bestScore = score
 				bestMove = currentMove
 				StorePvMove(currentMove, pos.GamePly)
-				// store history moves
 				if !pos.Capture(currentMove) {
-					mFrom := FromSQ(currentMove)
-					mTo := ToSQ(currentMove)
-					ctx.History[pos.SideToMove][mFrom][mTo] += int32(depth)
+					updateQuietHistory(&ctx.History, currentMove, pos.SideToMove, depth)
 				}
 			}
 		}
@@ -168,7 +162,7 @@ func (pos *PositionNG) ParallelSearch(depth uint8) (bestMove MoveNG, bestScore V
 	bestScore = -int32(MATE_VALUE)
 	results := make([]SearchResult, 0)
 
-	mp := orderMovesByHistory(ctx)
+	mp := orderMovesByHistoryForDepth(ctx, depth)
 	for currentMove := nextLegalOrderedMove(pos, &mp); currentMove != MOVE_NONE; currentMove = nextLegalOrderedMove(pos, &mp) {
 
 		wg.Add(1)

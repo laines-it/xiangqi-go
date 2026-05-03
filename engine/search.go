@@ -287,8 +287,10 @@ func negamaxABAbort(ctx *SearchContext, alpha, beta Value, pos *PositionNG, dept
 	}
 
 	movesSearched := 0
+	var quietsSearched [searchedQuietHistoryCapacity]MoveNG
+	quietsSearchedCount := 0
 	// loop over moves
-	mp := orderMovesByHeuristics(pos, ctx, ttMove)
+	mp := orderMovesByHeuristicsForDepth(pos, ctx, ttMove, depth)
 	for currentMove := nextLegalOrderedMove(pos, &mp); currentMove != MOVE_NONE; currentMove = nextLegalOrderedMove(pos, &mp) {
 		if abort != nil && abort.Load() {
 			return alpha
@@ -334,6 +336,7 @@ func negamaxABAbort(ctx *SearchContext, alpha, beta Value, pos *PositionNG, dept
 		}
 
 		pos.UndoMove(currentMove)
+		quietMove := !pos.Capture(currentMove)
 		movesSearched++
 
 		if score > alpha {
@@ -343,23 +346,30 @@ func negamaxABAbort(ctx *SearchContext, alpha, beta Value, pos *PositionNG, dept
 			// fmt.Printf("vvv StorePvMove: %s, score: %d, depth: %d, alpha: %d, searchPly: %d\n", pos.MoveStr(currentMove), score, depth, alpha, pos.GamePly)
 			storePvMove(currentMove, pos.GamePly, pvTable, pvLength)
 
-			// store history moves
-			if !pos.Capture(currentMove) {
-				mFrom := FromSQ(currentMove)
-				mTo := ToSQ(currentMove)
-				ctx.History[pos.SideToMove][mFrom][mTo] += int32(depth)
-			}
 			if score >= beta {
+				if quietMove {
+					updateBestQuietHistory(&ctx.History, currentMove, quietsSearched[:quietsSearchedCount], pos.SideToMove, depth)
+				}
 				// store hash entry with the score equal to beta
-				writeHashEntry(pos.St.Top().key, pos.St.Top().key2, int16(beta), bestMove, depth, uint8(pos.GamePly), TT_BETA)
+				writeHashEntryForSearch(ctx, pos.St.Top().key, pos.St.Top().key2, int16(beta), bestMove, depth, uint8(pos.GamePly), TT_BETA)
 				// store killer moves
-				if !pos.Capture(currentMove) {
+				if quietMove {
 					ctx.Killers[pos.GamePly][1] = ctx.Killers[pos.GamePly][0]
 					ctx.Killers[pos.GamePly][0] = currentMove
 				}
 				return beta
 			}
+			continue
 		}
+
+		if quietMove && quietsSearchedCount < len(quietsSearched) {
+			quietsSearched[quietsSearchedCount] = currentMove
+			quietsSearchedCount++
+		}
+	}
+
+	if IsOKMove(bestMove) && !pos.Capture(bestMove) {
+		updateBestQuietHistory(&ctx.History, bestMove, quietsSearched[:quietsSearchedCount], pos.SideToMove, depth)
 	}
 
 	// checkmate or stalemate is a win
@@ -368,7 +378,7 @@ func negamaxABAbort(ctx *SearchContext, alpha, beta Value, pos *PositionNG, dept
 	}
 
 	// store hash entry with the score equal to alpha
-	writeHashEntry(pos.St.Top().key, pos.St.Top().key2, int16(alpha), bestMove, depth, uint8(pos.GamePly), hashFlag)
+	writeHashEntryForSearch(ctx, pos.St.Top().key, pos.St.Top().key2, int16(alpha), bestMove, depth, uint8(pos.GamePly), hashFlag)
 
 	return alpha
 }
@@ -487,7 +497,24 @@ func readHashEntry(key, key2 Key, alpha, beta int16, depth, ply uint8) (int16, M
 
 // write hash entry data
 func writeHashEntry(key, key2 Key, score int16, bestMove MoveNG, depth, ply uint8, flag int8) {
+	writeHashEntryWithMoveReuse(key, key2, score, bestMove, depth, ply, flag, false)
+}
+
+func writeHashEntryForSearch(ctx *SearchContext, key, key2 Key, score int16, bestMove MoveNG, depth, ply uint8, flag int8) {
+	writeHashEntryWithMoveReuse(key, key2, score, bestMove, depth, ply, flag, ctx != nil && ctx.reuseAnyTTMove)
+}
+
+func writeHashEntryReuseAnyMove(key, key2 Key, score int16, bestMove MoveNG, depth, ply uint8, flag int8) {
+	writeHashEntryWithMoveReuse(key, key2, score, bestMove, depth, ply, flag, true)
+}
+
+func writeHashEntryWithMoveReuse(key, key2 Key, score int16, bestMove MoveNG, depth, ply uint8, flag int8, reuseAnyMove bool) {
 	entry := &TT.Entries[key&TT.Mask]
+	if !IsOKMove(bestMove) {
+		if data, ok := entry.Load(); ok && data.Key == key && data.Key2 == key2 && shouldReuseTTMove(data, depth, reuseAnyMove) {
+			bestMove = data.Move
+		}
+	}
 	if score < -MATE_SCORE {
 		score -= int16(ply)
 	}
@@ -503,4 +530,11 @@ func writeHashEntry(key, key2 Key, score int16, bestMove MoveNG, depth, ply uint
 		Move:  bestMove,
 		Age:   uint8(age.Load()),
 	})
+}
+
+func shouldReuseTTMove(data ttEntryData, depth uint8, reuseAnyMove bool) bool {
+	if !IsOKMove(data.Move) {
+		return false
+	}
+	return reuseAnyMove || (data.Flag == TT_EXACT && data.Depth+2 >= depth)
 }

@@ -245,8 +245,12 @@ func (pos *PositionNG) Legal(m MoveNG) bool {
 	// assert(color_of(moved_piece(m)) == us);
 	// assert(piece_on(square<KING>(us)) == make_piece(us, KING));
 
-	// A non-king move is always legal when not moving the king or a pinned piece if we don't need slow check
-	if !pos.St.Top().needSlowCheck && ksq != to && pos.BlockersForKing(us).And(SquareBB[from]) == (Bitboard{}) {
+	// Fast path from Pikafish: when full checking is not needed, a non-king
+	// move is legal if it is not pinned, or if the pinned piece stays on the
+	// king ray. Pinned cannons are special: capturing can uncover the king.
+	if !pos.St.Top().needSlowCheck && ksq != to &&
+		(pos.BlockersForKing(us).And(SquareBB[from]) == (Bitboard{}) ||
+			((TypeOf(pos.PieceOn(from)) != CANNON || !pos.Capture(m)) && Aligned(from, to, pos.KingSQ[us]))) {
 		return true
 	}
 	// If the moving piece is a king, check whether the destination square is
@@ -314,7 +318,7 @@ func (pos *PositionNG) GivesCheck(m MoveNG) bool {
 }
 
 func (pos *PositionNG) Capture(m MoveNG) bool {
-	return pos.Empty(ToSQ(m))
+	return !pos.Empty(ToSQ(m))
 }
 
 func (pos *PositionNG) GenerateMoves(us Color, pt PieceType, typ GenType, movieList []MoveNG, target Bitboard) (size uint8) {
@@ -872,6 +876,17 @@ func (pos *PositionNG) SetCheckInfo() {
 	st.checkSquares[BISHOP] = From64(0)
 	st.checkSquares[ADVISOR] = From64(0)
 	st.checkSquares[KING] = From64(0)
+
+	hollowCannons := st.checkSquares[ROOK].And(pos.Pieces(us, CANNON))
+	if hollowCannons != (Bitboard{}) {
+		hollowCannonDiscover := From64(0)
+		for hollowCannons != (Bitboard{}) {
+			hollowCannonDiscover = hollowCannonDiscover.Or(BetweenBB[PopLsb(&hollowCannons)][oksq])
+		}
+		for pt := ROOK; pt < KING; pt++ {
+			st.checkSquares[pt] = st.checkSquares[pt].Or(hollowCannonDiscover)
+		}
+	}
 }
 
 // / Position::set_state() computes the hash keys of the position, and other

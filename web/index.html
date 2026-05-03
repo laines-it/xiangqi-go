@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>godogpaw Xiangqi</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main id="app" class="app-shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">godogpaw</p>
+        <h1>Xiangqi Engine Arena</h1>
+      </div>
+      <div id="runtime-badge" class="runtime-badge">WASM</div>
+    </header>
+
+    <section class="game-layout" aria-label="Game board and controls">
+      <div class="board-area">
+        <div id="board-container" class="board-container">
+          <canvas id="board-canvas" width="516" height="572" aria-label="Xiangqi board"></canvas>
+        </div>
+        <div id="status-bar" class="status-bar" data-tone="loading">
+          <span id="status-text">Loading engine...</span>
+        </div>
+      </div>
+
+      <aside class="control-area" aria-label="Game controls">
+        <section class="control-panel">
+          <div class="panel-row">
+            <button id="btn-new-game" class="primary-btn" type="button">New Game</button>
+            <button id="btn-undo" type="button">Undo</button>
+            <button id="btn-flip" type="button">Flip</button>
+          </div>
+
+          <label class="field-label" for="sel-side">Play as</label>
+          <select id="sel-side">
+            <option value="white" selected>Red</option>
+            <option value="black">Black</option>
+          </select>
+        </section>
+
+        <section class="control-panel">
+          <div class="section-title">Opponent</div>
+          <div id="algorithm-tabs" class="segmented-control" role="tablist" aria-label="AI algorithm">
+            <button class="segment active" type="button" data-algorithm="alpha-beta">Alpha-Beta</button>
+            <button class="segment" type="button" data-algorithm="ybwc">YBWC</button>
+            <button class="segment" type="button" data-algorithm="lazysmp">LazySMP</button>
+            <button class="segment" type="button" data-algorithm="pikafish">Pikafish</button>
+          </div>
+          <p id="algorithm-note" class="note" aria-live="polite"></p>
+        </section>
+
+        <section class="control-panel">
+          <div class="section-title">Search</div>
+          <div class="preset-row">
+            <button class="preset-btn" type="button" data-depth="2">Fast</button>
+            <button class="preset-btn active" type="button" data-depth="4">Balanced</button>
+            <button class="preset-btn" type="button" data-depth="6">Deep</button>
+          </div>
+
+          <label class="slider-row" for="slider-depth">
+            <span>Depth</span>
+            <strong id="val-depth">4</strong>
+          </label>
+          <input type="range" id="slider-depth" min="1" max="10" value="4">
+
+          <label class="slider-row" for="slider-threads">
+            <span>LazySMP threads</span>
+            <strong id="val-threads">2</strong>
+          </label>
+          <input type="range" id="slider-threads" min="1" max="8" value="2">
+        </section>
+
+        <section class="control-panel stats-panel">
+          <div class="section-title">Position</div>
+          <dl class="stats-grid">
+            <div>
+              <dt>Turn</dt>
+              <dd id="stat-turn">Red</dd>
+            </div>
+            <div>
+              <dt>Last</dt>
+              <dd id="stat-last">-</dd>
+            </div>
+            <div>
+              <dt>Score</dt>
+              <dd id="stat-score">-</dd>
+            </div>
+            <div>
+              <dt>Time</dt>
+              <dd id="stat-time">-</dd>
+            </div>
+          </dl>
+          <div class="pv-line">
+            <span>PV</span>
+            <output id="stat-pv">-</output>
+          </div>
+        </section>
+
+        <section class="control-panel move-panel">
+          <div class="section-title">Moves</div>
+          <ol id="move-list" class="move-list" aria-label="Move list"></ol>
+        </section>
+      </aside>
+    </section>
+  </main>
+
+  <script src="wasm_exec.js"></script>
+  <script src="board.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

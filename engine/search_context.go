@@ -3,11 +3,12 @@ package engine
 import "sync"
 
 type SearchContext struct {
-	History      HistoryTable
-	Killers      [MAX_MOVES][2]MoveNG
-	stateStorage [MAX_PLY + 1]StateInfo
-	stateStack   [MAX_PLY + 1]*StateInfo
-	Nodes        int
+	History        HistoryTable
+	Killers        [MAX_MOVES][2]MoveNG
+	stateStorage   [MAX_PLY + 1]StateInfo
+	stateStack     [MAX_PLY + 1]*StateInfo
+	Nodes          int
+	reuseAnyTTMove bool
 }
 
 var searchContextPool sync.Pool
@@ -30,6 +31,7 @@ func releaseSearchContext(ctx *SearchContext) {
 
 func (ctx *SearchContext) clear() {
 	ctx.Nodes = 0
+	ctx.reuseAnyTTMove = false
 	clear(ctx.Killers[:])
 	clear(ctx.History[:])
 }

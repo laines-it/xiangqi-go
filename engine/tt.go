@@ -2,14 +2,12 @@ package engine
 
 import (
 	"fmt"
-	"runtime"
 	"strings"
 	"sync/atomic"
 	"unsafe"
 )
 
 type TTEntry struct {
-	seq    atomic.Uint64
 	key    atomic.Uint64
 	key2   atomic.Uint64
 	packed atomic.Uint64
@@ -26,55 +24,26 @@ type ttEntryData struct {
 }
 
 func (entry *TTEntry) Load() (ttEntryData, bool) {
-	for tries := 0; tries < 3; tries++ {
-		seq := entry.seq.Load()
-		if seq&1 != 0 {
-			continue
-		}
-
-		key := Key(entry.key.Load())
-		key2 := Key(entry.key2.Load())
-		packed := entry.packed.Load()
-
-		if entry.seq.Load() != seq {
-			continue
-		}
-		if key == 0 {
-			return ttEntryData{}, false
-		}
-
-		return unpackTTEntry(key, key2, packed), true
+	key := Key(entry.key.Load())
+	if key == 0 {
+		return ttEntryData{}, false
 	}
-	return ttEntryData{}, false
+
+	key2 := Key(entry.key2.Load())
+	packed := entry.packed.Load()
+	return unpackTTEntry(key, key2, packed), true
 }
 
 func (entry *TTEntry) Store(data ttEntryData) {
-	seq := entry.beginWrite()
 	entry.key2.Store(uint64(data.Key2))
 	entry.packed.Store(packTTEntry(data))
 	entry.key.Store(uint64(data.Key))
-	entry.seq.Store(seq + 2)
 }
 
 func (entry *TTEntry) Clear() {
-	seq := entry.beginWrite()
 	entry.key.Store(0)
 	entry.key2.Store(0)
 	entry.packed.Store(0)
-	entry.seq.Store(seq + 2)
-}
-
-func (entry *TTEntry) beginWrite() uint64 {
-	for {
-		seq := entry.seq.Load()
-		if seq&1 != 0 {
-			runtime.Gosched()
-			continue
-		}
-		if entry.seq.CompareAndSwap(seq, seq+1) {
-			return seq
-		}
-	}
 }
 
 func packTTEntry(data ttEntryData) uint64 {

@@ -76,7 +76,7 @@ func ybwcWriteHashEntry(key, key2 Key, score int16, bestMove MoveNG, depth, ply 
 	ybwcTTMu.Lock()
 	defer ybwcTTMu.Unlock()
 
-	writeHashEntry(key, key2, score, bestMove, depth, ply, flag)
+	writeHashEntryReuseAnyMove(key, key2, score, bestMove, depth, ply, flag)
 }
 
 func ybwcProbeTT(pos *PositionNG, depth uint8, alpha, beta Value) ybwcTTProbe {
@@ -174,9 +174,7 @@ func ybwcRecordBestLine(ctx context.Context, search *SearchContext, pos *Positio
 
 	StorePvMove(move, pos.GamePly)
 	if !pos.Capture(move) {
-		mFrom := FromSQ(move)
-		mTo := ToSQ(move)
-		search.History[pos.SideToMove][mFrom][mTo] += int32(depth)
+		updateQuietHistory(&search.History, move, pos.SideToMove, depth)
 	}
 }
 
@@ -293,7 +291,7 @@ func negamaxYBWC(ctx context.Context, search *SearchContext, pos *PositionNG, no
 		return probe.score
 	}
 
-	mp := orderMovesByHeuristics(pos, search, probe.move)
+	mp := orderMovesByHeuristicsForDepth(pos, search, probe.move, depth)
 	firstMove := nextLegalOrderedMove(pos, &mp)
 	if firstMove == MOVE_NONE {
 		return -Value(MATE_VALUE) + Value(pos.GamePly)

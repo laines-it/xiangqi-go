@@ -6,6 +6,7 @@ import (
 )
 
 const lazySMPTBWinBound = VALUE_MATE_IN_MAX_PLY
+const lazySMPAggressiveTTMoveThreads = 6
 
 type LazySMPOptions struct {
 	Threads    int
@@ -57,8 +58,9 @@ func (pos *PositionNG) SearchPositionLazySMPWithOptions(depth uint8, opts LazySM
 	opts = opts.normalized()
 	ctx := newSearchContext()
 	clearSearch(ctx, pos)
+	ctx.reuseAnyTTMove = opts.Threads < lazySMPAggressiveTTMoveThreads
 
-	rootMoves := lazySMPGenerateRootMoves(pos, ctx)
+	rootMoves := lazySMPGenerateRootMoves(pos, ctx, depth)
 	if depth == 0 || len(rootMoves) == 0 {
 		return MOVE_NONE, VALUE_DRAW
 	}
@@ -138,6 +140,7 @@ func lazySMPCreateThreads(pos *PositionNG, rootCtx *SearchContext, opts LazySMPO
 			threadCtx = newSearchContext()
 			threadPos = lazySMPCopyPosition(pos, threadCtx)
 		}
+		threadCtx.reuseAnyTTMove = rootCtx.reuseAnyTTMove
 
 		threads[idx] = &lazySMPThreadData{
 			idx:        idx,
@@ -291,9 +294,9 @@ func (thread *lazySMPThreadData) searchRoot(depth uint8, alpha, beta Value, abor
 	}
 }
 
-func lazySMPGenerateRootMoves(pos *PositionNG, ctx *SearchContext) []LazySMPRootMove {
+func lazySMPGenerateRootMoves(pos *PositionNG, ctx *SearchContext, depth uint8) []LazySMPRootMove {
 	rootMoves := make([]LazySMPRootMove, 0, MAX_MOVES)
-	mp := orderMovesByHistory(ctx)
+	mp := orderMovesByHistoryForDepth(ctx, depth)
 	for move := nextLegalOrderedMove(pos, &mp); move != MOVE_NONE; move = nextLegalOrderedMove(pos, &mp) {
 		rootMoves = append(rootMoves, LazySMPRootMove{
 			Move:  move,

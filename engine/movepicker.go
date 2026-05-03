@@ -17,6 +17,7 @@ const (
 
 type MovePicker struct {
 	SkipQuiets bool
+	LegalOnly  bool
 	Stage      STAGE_T
 	Split      uint8
 	NoisySize  uint8
@@ -31,8 +32,9 @@ type MovePicker struct {
 	History *HistoryTable
 }
 
-func InitalizeMovePicker(mp *MovePicker, skipQuiets bool, tableMove, killer1, killer2 MoveNG, history *HistoryTable) {
+func InitalizeMovePicker(mp *MovePicker, skipQuiets bool, legalOnly bool, tableMove, killer1, killer2 MoveNG, history *HistoryTable) {
 	mp.SkipQuiets = skipQuiets
+	mp.LegalOnly = legalOnly
 	mp.Stage = STAGE_TABLE
 	mp.Split = 0
 	mp.NoisySize = 0
@@ -49,6 +51,49 @@ func InitalizeMovePicker(mp *MovePicker, skipQuiets bool, tableMove, killer1, ki
 		mp.Killer2 = MOVE_NONE
 	}
 	mp.History = history
+}
+
+func generateLegalMovePickerMoves(mp *MovePicker, pos *PositionNG) {
+	var quiets [MAX_MOVES]MoveNG
+	size := pos.Generate(LEGAL, mp.Moves[:])
+	noisySize := uint8(0)
+	quietSize := uint8(0)
+
+	for i := uint8(0); i < size; i++ {
+		move := mp.Moves[i]
+		if pos.Capture(move) {
+			mp.Moves[noisySize] = move
+			noisySize++
+		} else {
+			quiets[quietSize] = move
+			quietSize++
+		}
+	}
+
+	mp.NoisySize = noisySize
+	mp.Split = noisySize
+	mp.QuietSize = quietSize
+	copy(mp.Moves[mp.Split:], quiets[:quietSize])
+}
+
+func ensureLegalMovePickerMoves(mp *MovePicker, pos *PositionNG) {
+	if mp.LegalOnly && mp.Stage == STAGE_TABLE && mp.NoisySize == 0 && mp.QuietSize == 0 {
+		generateLegalMovePickerMoves(mp, pos)
+	}
+}
+
+func movePickerHasMove(mp *MovePicker, move MoveNG) bool {
+	for i := uint8(0); i < mp.NoisySize; i++ {
+		if mp.Moves[i] == move {
+			return true
+		}
+	}
+	for i := mp.Split; i < mp.Split+mp.QuietSize; i++ {
+		if mp.Moves[i] == move {
+			return true
+		}
+	}
+	return false
 }
 
 func EvaluateNoisyMoves(mp *MovePicker, pos *PositionNG) {
@@ -116,8 +161,13 @@ func SelectNextMove(mp *MovePicker, pos *PositionNG) MoveNG {
 	case STAGE_TABLE:
 		// Play the table move if it is from this
 		// position, also advance to the next stage
+		if mp.LegalOnly {
+			ensureLegalMovePickerMoves(mp, pos)
+		}
 		mp.Stage = STAGE_GENERATE_NOISY
-		if mp.TableMove != MOVE_NONE && pos.PseudoLegal(mp.TableMove) {
+		if mp.TableMove != MOVE_NONE &&
+			((mp.LegalOnly && movePickerHasMove(mp, mp.TableMove)) ||
+				(!mp.LegalOnly && pos.PseudoLegal(mp.TableMove))) {
 			return mp.TableMove
 		}
 		fallthrough
@@ -125,9 +175,13 @@ func SelectNextMove(mp *MovePicker, pos *PositionNG) MoveNG {
 		// Generate all noisy moves and evaluate them. Set up the
 		// split in the array to store quiet and noisy moves. Also,
 		// this stage is only a helper. Advance to the next one.
-		mp.NoisySize = pos.Generate(CAPTURES, mp.Moves[:])
+		if mp.LegalOnly {
+			ensureLegalMovePickerMoves(mp, pos)
+		} else {
+			mp.NoisySize = pos.Generate(CAPTURES, mp.Moves[:])
+			mp.Split = mp.NoisySize
+		}
 		EvaluateNoisyMoves(mp, pos)
-		mp.Split = mp.NoisySize
 		mp.Stage = STAGE_NOISY
 		fallthrough
 	case STAGE_NOISY:
@@ -176,7 +230,9 @@ func SelectNextMove(mp *MovePicker, pos *PositionNG) MoveNG {
 		// Play the killer move if it is from this position.
 		// position, and also advance to the next stage
 		mp.Stage = STAGE_KILLER_2
-		if IsOKMove(mp.Killer1) && pos.PseudoLegal(mp.Killer1) {
+		if IsOKMove(mp.Killer1) &&
+			((mp.LegalOnly && movePickerHasMove(mp, mp.Killer1)) ||
+				(!mp.LegalOnly && pos.PseudoLegal(mp.Killer1))) {
 			return mp.Killer1
 		}
 		fallthrough
@@ -184,14 +240,18 @@ func SelectNextMove(mp *MovePicker, pos *PositionNG) MoveNG {
 		// Play the killer move if it is from this position.
 		// position, and also advance to the next stage
 		mp.Stage = STAGE_GENERATE_QUIET
-		if IsOKMove(mp.Killer2) && pos.PseudoLegal(mp.Killer2) {
+		if IsOKMove(mp.Killer2) &&
+			((mp.LegalOnly && movePickerHasMove(mp, mp.Killer2)) ||
+				(!mp.LegalOnly && pos.PseudoLegal(mp.Killer2))) {
 			return mp.Killer2
 		}
 		fallthrough
 	case STAGE_GENERATE_QUIET:
 		// Generate all quiet moves and evaluate them
 		// and also advance to the final fruitful stage
-		mp.QuietSize = pos.Generate(QUIETS, mp.Moves[mp.Split:])
+		if !mp.LegalOnly {
+			mp.QuietSize = pos.Generate(QUIETS, mp.Moves[mp.Split:])
+		}
 		EvaluateQuietMoves(mp, pos)
 		mp.Stage = STAGE_QUIET
 		fallthrough

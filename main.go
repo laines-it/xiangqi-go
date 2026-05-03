@@ -1,14 +1,17 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"math/rand"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/hmgle/godogpaw/engine"
+	"github.com/hmgle/godogpaw/pikafish"
 )
 
 type CallResult struct {
@@ -25,6 +28,12 @@ type FunctionResults struct {
 	AverageSec float64      `json:"average_sec"`
 	TotalSec   float64      `json:"total_sec"`
 	Cumulative []float64    `json:"cumulative_sec"`
+}
+
+var defaultPikafish struct {
+	once   sync.Once
+	client *pikafish.Engine
+	err    error
 }
 
 func test(name string, getBestMoveFunc func(i int, pos *engine.PositionNG, depth int) engine.Value, pos *engine.PositionNG, depth int, n int) FunctionResults {
@@ -63,62 +72,37 @@ func test(name string, getBestMoveFunc func(i int, pos *engine.PositionNG, depth
 	return stats
 }
 
+var pika *pikafish.Engine
+
 func main() {
 	test := false
 	if test {
 		test_speed()
 		return
 	}
-	var pos engine.PositionNG
-	//initialFen := "rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w - - 0 1"
-	fen1 := "1C2ka3/9/C1Nab1n2/p3p3p/6p2/9/P3P3P/3AB4/3p2c2/c1BAK4 w - - 0 1"
-	fen2 := "rnbakabCr/9/7c1/p1p1p1p2/1c6p/9/P1P1P1P1P/9/1C2K4/RNBA1ABNR b - - 0 1"
-	fen3 := "rnbaka1nr/9/3c4b/p1p1p1p1p/7C1/9/P1P1P1P1P/1c7/9/RNBAKABNR w - - 0 1"
-	fen4 := "rCbakab1r/9/6nc1/2p1p3p/p5p2/1c7/P1P1P1PCP/R8/9/1NBAKABNR b - - 0 1"
 
-	fen5 := "1nbakCbr1/r8/1c4c2/p1p3p1p/4p4/8P/P1P1P1P2/1CN6/8R/R1BAKABN1 w - - 0 1"
-
-	fen6 := "r1bk1abnr/5c3/9/p1p1pC2p/3C5/9/P1P1P1P2/8B/9/RNBAKA1Nc b - - 0 1"
-
-	fen7 := "2b2kb2/9/r7r/pc2p1p1p/2p6/9/P1P1c1P1P/9/9/RNBAKABNR w - - 0 1"
-
-	fen8 := "1nbakabr1/9/r8/p1pC2p1p/9/9/P1P1p1P1P/2N1B1Nc1/4A4/1R1cK1B1R b - - 0 1"
-
-	fen9 := "rnbakabn1/8C/1r7/p1p3p1p/4p4/2P6/P3P1P1P/7C1/2R6/2B1K1c1R w - - 0 1"
-
-	fen10 := "1rbaka3/5R3/4b3r/p1p3p1p/4P4/4c4/P1P3P1P/4C4/9/RNBK2B2 b - - 0 1"
-
-	fen11 := "2b1kabnr/R3aC3/2n6/2p1p1p2/9/4P3p/2P3P2/9/2c1A4/1NB2KB1R w - - 0 1"
-
-	pos.Set(fen1)
-	fmt.Println(pos.String(true))
-	pos.Set(fen2)
-	fmt.Println(pos.String(true))
-	pos.Set(fen3)
-	fmt.Println(pos.String(true))
-	pos.Set(fen4)
-	fmt.Println(pos.String(true))
-	pos.Set(fen5)
-	fmt.Println(pos.String(true))
-	pos.Set(fen6)
-	fmt.Println(pos.String(true))
-	pos.Set(fen7)
-	fmt.Println(pos.String(true))
-	pos.Set(fen8)
-	fmt.Println(pos.String(true))
-	pos.Set(fen9)
-	fmt.Println(pos.String(true))
-	pos.Set(fen10)
-	fmt.Println(pos.String(true))
-	pos.Set(fen11)
-	fmt.Println(pos.String(true))
 	// // Magic example
+	// var pos engine.PositionNG
 	// emptyFen := "4k4/7H1/9/1H7/9/9/1r2H4/9/9/3K5 w - - 0 1"
 	// pos.Set(emptyFen)
-	// fmt.Println(pos.String(light))
+	// fmt.Println(pos.String(true))
+	// sq := engine.SQ_B3
+	// occupied := engine.SquareBB[engine.SQ_B6].
+	// 	Or(engine.SquareBB[engine.SQ_E3]).
+	// 	Or(engine.SquareBB[engine.SQ_H8])
+	// info := engine.MagicInfo(engine.ROOK, sq, occupied)
+	// fmt.Printf("mask_popcount=%d shift=%d table_variants=%d\n", info.MaskPopcount, info.Shift, info.TableVariants)
+	// fmt.Printf("magic_hi=0x%016X magic_lo=0x%016X\n", info.Magic.Hi, info.Magic.Lo)
+	// fmt.Printf("index=%d\n", info.Index)
 
-	// Match example
-	//startMatch("YBWC", GetBestMoveYBWC, 6, "LazySMP", GetBestMoveLazy5, 6)
+	//Match example
+	var err error
+	pika, err = getDefaultPikafish()
+	if err != nil {
+		log.Fatalf("Failed to initialize Pikafish: %v", err)
+	}
+
+	startMatch("YBWC", GetBestMoveYBWC, 6, "Pikafish", GetBestMovePikafish, 1)
 
 	// Accuracy example
 	// name := "YBWC"
@@ -358,4 +342,45 @@ func GetBestMoveYBWC(i int, pos *engine.PositionNG, depth int) engine.Value {
 	fmt.Println(i, pos.MoveStr(mv))
 	pos.DoMove(mv, &state)
 	return score
+}
+
+func GetBestMovePikafish(i int, pos *engine.PositionNG, depth int) engine.Value {
+	var state engine.StateInfo
+
+	client := pika
+	if client == nil {
+		var err error
+		client, err = getDefaultPikafish()
+		if err != nil {
+			log.Fatalf("Pikafish initialization failed: %v", err)
+		}
+	}
+
+	timeout := time.Duration(max(depth, 1)) * time.Minute
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	result, err := client.BestMove(ctx, pos.FEN(), depth)
+	if err != nil {
+		log.Fatalf("Pikafish search failed: %v", err)
+	}
+	mv, err := engine.ParseUCIMove(pos, result.BestMove)
+	if err != nil {
+		log.Fatalf("Pikafish returned invalid move %q: %v", result.BestMove, err)
+	}
+	score := engine.VALUE_DRAW
+	if result.HasScore {
+		score = engine.Value(result.Score)
+	}
+
+	fmt.Println(i, pos.MoveStr(mv))
+	pos.DoMove(mv, &state)
+	return score
+}
+
+func getDefaultPikafish() (*pikafish.Engine, error) {
+	defaultPikafish.once.Do(func() {
+		defaultPikafish.client, defaultPikafish.err = pikafish.NewFromEnv()
+	})
+	return defaultPikafish.client, defaultPikafish.err
 }

@@ -1,8 +1,11 @@
 package engine
 
 import (
+	"context"
 	"testing"
 	"time"
+
+	"github.com/hmgle/godogpaw/pikafish"
 )
 
 var negamaxBenchmarkScoreSink Value
@@ -12,23 +15,12 @@ var sequentialSearchBenchmarkScoreSink Value
 var sequentialSearchBenchmarkMoveSink MoveNG
 
 const (
-	sequentialSearchBenchmarkMoves         = 5
-	sequentialSearchBenchmarkLazySMPThread = 2
+	sequentialSearchBenchmarkMoves = 5
+	sequentialSearchBenchmarkFEN   = "1C2ka3/9/C1Nab1n2/p3p3p/6p2/9/P3P3P/3AB4/3p2c2/c1BAK4 w - - 0 1"
 )
 
 var sequentialSearchBenchmarkDepths = []uint8{6, 8, 10}
-var sequentialSearchBenchmarkFENs = []string{
-	"rnbakabCr/9/7c1/p1p1p1p2/1c6p/9/P1P1P1P1P/9/1C2K4/RNBA1ABNR b - - 0 1",
-	"rnbaka1nr/9/3c4b/p1p1p1p1p/7C1/9/P1P1P1P1P/1c7/9/RNBAKABNR w - - 0 1",
-	"rCbakab1r/9/6nc1/2p1p3p/p5p2/1c7/P1P1P1PCP/R8/9/1NBAKABNR b - - 0 1",
-	"1nbakCbr1/r8/1c4c2/p1p3p1p/4p4/8P/P1P1P1P2/1CN6/8R/R1BAKABN1 w - - 0 1",
-	"r1bk1abnr/5c3/9/p1p1pC2p/3C5/9/P1P1P1P2/8B/9/RNBAKA1Nc b - - 0 1",
-	"2b2kb2/9/r7r/pc2p1p1p/2p6/9/P1P1c1P1P/9/9/RNBAKABNR w - - 0 1",
-	"1nbakabr1/9/r8/p1pC2p1p/9/9/P1P1p1P1P/2N1B1Nc1/4A4/1R1cK1B1R b - - 0 1",
-	"rnbakabn1/8C/1r7/p1p3p1p/4p4/2P6/P3P1P1P/7C1/2R6/2B1K1c1R w - - 0 1",
-	"1rbaka3/5R3/4b3r/p1p3p1p/4P4/4c4/P1P3P1P/4C4/9/RNBK2B2 b - - 0 1",
-	"2b1kabnr/R3aC3/2n6/2p1p1p2/9/4P3p/2P3P2/9/2c1A4/1NB2KB1R w - - 0 1",
-}
+var sequentialSearchBenchmarkLazySMPThreads = []int{4, 5, 6}
 
 var negamaxBenchmarkCases = []struct {
 	name  string
@@ -73,6 +65,7 @@ func BenchmarkLazySMPSearchAverage(b *testing.B) {
 		tc := tc
 		b.Run(tc.name, func(b *testing.B) {
 			for _, threads := range threadCounts {
+				threads := threads
 				b.Run("threads_"+itoaBenchmark(threads), func(b *testing.B) {
 					benchmarkLazySMPSearch(b, tc.fen, tc.depth, threads)
 				})
@@ -89,17 +82,20 @@ func BenchmarkSequentialSearchMoves(b *testing.B) {
 					return pos.SearchPosition_ab(depth)
 				})
 			})
-			b.Run("YBWC", func(b *testing.B) {
-				benchmarkSequentialSearchMoves(b, func(pos *PositionNG) (MoveNG, Value) {
-					return pos.SearchPositionYBWC(depth)
-				})
-			})
+			// b.Run("YBWC", func(b *testing.B) {
+			// 	benchmarkSequentialSearchMoves(b, func(pos *PositionNG) (MoveNG, Value) {
+			// 		return pos.SearchPositionYBWC(depth)
+			// 	})
+			// })
 			b.Run("LazySMP", func(b *testing.B) {
-				b.Run("threads_"+itoaBenchmark(sequentialSearchBenchmarkLazySMPThread), func(b *testing.B) {
-					benchmarkSequentialSearchMoves(b, func(pos *PositionNG) (MoveNG, Value) {
-						return pos.SearchPositionLazySMP(depth, sequentialSearchBenchmarkLazySMPThread)
+				for _, threads := range sequentialSearchBenchmarkLazySMPThreads {
+					threads := threads
+					b.Run("threads_"+itoaBenchmark(threads), func(b *testing.B) {
+						benchmarkSequentialSearchMoves(b, func(pos *PositionNG) (MoveNG, Value) {
+							return pos.SearchPositionLazySMP(depth, threads)
+						})
 					})
-				})
+				}
 			})
 		})
 	}
@@ -114,10 +110,40 @@ func BenchmarkSearchAccuracyFixedFEN(b *testing.B) {
 				})
 			})
 			b.Run("LazySMP", func(b *testing.B) {
-				b.Run("threads_"+itoaBenchmark(sequentialSearchBenchmarkLazySMPThread), func(b *testing.B) {
-					benchmarkSearchAccuracyFixedFEN(b, depth, func(pos *PositionNG) (MoveNG, Value) {
-						return pos.SearchPositionLazySMP(depth, sequentialSearchBenchmarkLazySMPThread)
+				for _, threads := range sequentialSearchBenchmarkLazySMPThreads {
+					threads := threads
+					b.Run("threads_"+itoaBenchmark(threads), func(b *testing.B) {
+						benchmarkSearchAccuracyFixedFEN(b, depth, func(pos *PositionNG) (MoveNG, Value) {
+							return pos.SearchPositionLazySMP(depth, threads)
+						})
 					})
+				}
+			})
+			b.Run("Pikafish", func(b *testing.B) {
+				pika, err := pikafish.NewFromEnv()
+				if err != nil {
+					b.Skipf("Pikafish is not available: %v", err)
+				}
+				defer pika.Close()
+
+				benchmarkSequentialSearchMoves(b, func(pos *PositionNG) (MoveNG, Value) {
+					timeout := time.Duration(max(depth, 1)) * time.Minute
+					ctx, cancel := context.WithTimeout(context.Background(), timeout)
+					defer cancel()
+
+					result, err := pika.BestMove(ctx, pos.FEN(), int(depth))
+					if err != nil {
+						b.Fatalf("Pikafish search failed: %v", err)
+					}
+					move, err := ParseUCIMove(pos, result.BestMove)
+					if err != nil {
+						b.Fatalf("Pikafish returned invalid move %q: %v", result.BestMove, err)
+					}
+					if !result.HasScore {
+						return move, VALUE_DRAW
+					}
+					return move, Value(result.Score)
+
 				})
 			})
 		})
@@ -132,15 +158,20 @@ func BenchmarkSearchCountersFixedFEN(b *testing.B) {
 					return pos.SearchPosition_ab(depth)
 				})
 			})
-			b.Run("YBWC", func(b *testing.B) {
-				benchmarkSearchCountersFixedFEN(b, func(pos *PositionNG) (MoveNG, Value) {
-					return pos.SearchPositionYBWC(depth)
-				})
-			})
-			b.Run("LazySMP_threads_2", func(b *testing.B) {
-				benchmarkSearchCountersFixedFEN(b, func(pos *PositionNG) (MoveNG, Value) {
-					return pos.SearchPositionLazySMP(depth, sequentialSearchBenchmarkLazySMPThread)
-				})
+			// b.Run("YBWC", func(b *testing.B) {
+			// 	benchmarkSearchCountersFixedFEN(b, func(pos *PositionNG) (MoveNG, Value) {
+			// 		return pos.SearchPositionYBWC(depth)
+			// 	})
+			// })
+			b.Run("LazySMP", func(b *testing.B) {
+				for _, threads := range sequentialSearchBenchmarkLazySMPThreads {
+					threads := threads
+					b.Run("threads_"+itoaBenchmark(threads), func(b *testing.B) {
+						benchmarkSearchCountersFixedFEN(b, func(pos *PositionNG) (MoveNG, Value) {
+							return pos.SearchPositionLazySMP(depth, threads)
+						})
+					})
+				}
 			})
 		})
 	}
@@ -153,26 +184,19 @@ func benchmarkSequentialSearchMoves(b *testing.B, search func(*PositionNG) (Move
 
 	var totalSearchNanos int64
 	var searchedMoves int
-	var searchedSequences int
 
 	for i := 0; i < b.N; i++ {
-		for _, fen := range sequentialSearchBenchmarkFENs {
-			var pos PositionNG
-			pos.Set(fen)
-			TTClear()
-			MHTClear()
+		var pos PositionNG
+		pos.Set(sequentialSearchBenchmarkFEN)
+		TTClear()
+		MHTClear()
 
-			elapsed := runSequentialSearchBenchmarkMoves(b, &pos, search)
+		elapsed := runSequentialSearchBenchmarkMoves(b, &pos, search)
 
-			totalSearchNanos += elapsed.Nanoseconds()
-			searchedMoves += sequentialSearchBenchmarkMoves
-			searchedSequences++
-		}
+		totalSearchNanos += elapsed.Nanoseconds()
+		searchedMoves += sequentialSearchBenchmarkMoves
 	}
 
-	if searchedSequences > 0 {
-		b.ReportMetric(float64(totalSearchNanos)/float64(searchedSequences)/1e6, "ms/sequence")
-	}
 	if searchedMoves > 0 {
 		b.ReportMetric(float64(totalSearchNanos)/float64(searchedMoves)/1e6, "ms/move")
 	}
@@ -186,36 +210,31 @@ func benchmarkSearchCountersFixedFEN(b *testing.B, search func(*PositionNG) (Mov
 	var totalPositions uint64
 	var totalEvaluates uint64
 	var searchedMoves int
-	var searchedSequences int
+	var totalElapsed time.Duration
 
 	for i := 0; i < b.N; i++ {
-		var total_elapsed time.Duration
-		for _, fen := range sequentialSearchBenchmarkFENs {
-			var pos PositionNG
-			pos.Set(fen)
-			TTClear()
-			MHTClear()
+		var pos PositionNG
+		pos.Set(sequentialSearchBenchmarkFEN)
+		TTClear()
+		MHTClear()
 
-			visitedPositionCount.Store(0)
-			evaluateCallCount.Store(0)
+		visitedPositionCount.Store(0)
+		evaluateCallCount.Store(0)
 
-			elapsed := runSequentialSearchBenchmarkMoves(b, &pos, search)
-			total_elapsed += elapsed
+		elapsed := runSequentialSearchBenchmarkMoves(b, &pos, search)
 
-			totalPositions += visitedPositionCount.Load()
-			totalEvaluates += evaluateCallCount.Load()
-			searchedMoves += sequentialSearchBenchmarkMoves
-			searchedSequences++
-		}
-		average_time := float64(total_elapsed.Milliseconds()) / float64(searchedSequences*sequentialSearchBenchmarkMoves)
-		b.ReportMetric(average_time, "ms/move")
+		totalElapsed += elapsed
+		totalPositions += visitedPositionCount.Load()
+		totalEvaluates += evaluateCallCount.Load()
+		searchedMoves += sequentialSearchBenchmarkMoves
 	}
 
-	if searchedSequences > 0 {
-		b.ReportMetric(float64(totalPositions)/float64(searchedSequences), "positions/sequence")
-		b.ReportMetric(float64(totalEvaluates)/float64(searchedSequences), "evals/sequence")
+	if b.N > 0 {
+		b.ReportMetric(float64(totalPositions)/float64(b.N), "positions/sequence")
+		b.ReportMetric(float64(totalEvaluates)/float64(b.N), "evals/sequence")
 	}
 	if searchedMoves > 0 {
+		b.ReportMetric(float64(totalElapsed.Nanoseconds())/float64(searchedMoves)/1e6, "ms/move")
 		b.ReportMetric(float64(totalPositions)/float64(searchedMoves), "positions/move")
 		b.ReportMetric(float64(totalEvaluates)/float64(searchedMoves), "evals/move")
 	}
@@ -226,35 +245,31 @@ func benchmarkSearchAccuracyFixedFEN(b *testing.B, depth uint8, search func(*Pos
 	b.ReportAllocs()
 
 	success := 0
-	attempts := 0
+	expectedMove, expectedScore := benchmarkAlphaBetaExpected(depth)
 	for i := 0; i < b.N; i++ {
-		for _, fen := range sequentialSearchBenchmarkFENs {
-			expectedMove, expectedScore := benchmarkAlphaBetaExpected(fen, depth)
-			foundMove, foundScore := benchmarkSearchResult(fen, search)
+		foundMove, foundScore := benchmarkSearchResult(search)
 
-			if foundMove == expectedMove || foundScore == expectedScore {
-				success++
-			}
-			attempts++
+		if foundMove == expectedMove || foundScore == expectedScore {
+			success++
 		}
 	}
 
-	if attempts > 0 {
-		b.ReportMetric(float64(success)/float64(attempts), "accuracy")
+	if b.N > 0 {
+		b.ReportMetric(float64(success)/float64(b.N)*100, "accuracy_percent")
 	}
 }
 
-func benchmarkAlphaBetaExpected(fen string, depth uint8) (MoveNG, Value) {
+func benchmarkAlphaBetaExpected(depth uint8) (MoveNG, Value) {
 	var pos PositionNG
-	pos.Set(fen)
+	pos.Set(sequentialSearchBenchmarkFEN)
 	TTClear()
 	MHTClear()
 	return pos.SearchPosition_ab(depth)
 }
 
-func benchmarkSearchResult(fen string, search func(*PositionNG) (MoveNG, Value)) (MoveNG, Value) {
+func benchmarkSearchResult(search func(*PositionNG) (MoveNG, Value)) (MoveNG, Value) {
 	var pos PositionNG
-	pos.Set(fen)
+	pos.Set(sequentialSearchBenchmarkFEN)
 	TTClear()
 	MHTClear()
 	return search(&pos)
