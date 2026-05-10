@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"math/rand"
 	"testing"
 	"time"
 )
@@ -204,8 +205,7 @@ func benchmarkSequentialSearchMoves(b *testing.B, search func(*PositionNG) (Move
 	var searchedMoves int
 
 	for i := 0; i < b.N; i++ {
-		var pos PositionNG
-		pos.Set(sequentialSearchBenchmarkFEN)
+		pos := generateBenchmarkPosition(sequentialSearchBenchmarkFEN)
 		TTClear()
 		MHTClear()
 
@@ -402,4 +402,25 @@ func prepareBenchmarkPosition(b *testing.B, fen string) *PositionNG {
 	clearSearch(newSearchContext(), &pos)
 
 	return &pos
+}
+
+func generateBenchmarkPosition(fen string) PositionNG {
+	var pos PositionNG
+	pos.Set(fen)
+	random_moves := 2
+	var moves [MAX_MOVES]MoveNG
+	var st StateInfo
+	for range random_moves {
+		pos.GenerateLEGAL(moves[:])
+		var truncated []MoveNG
+		for i, move := range moves {
+			if move == 0 {
+				truncated = moves[:i]
+				break
+			}
+		}
+		random_move := moves[rand.Intn(len(truncated))]
+		pos.DoMove(random_move, &st)
+	}
+	return pos
 }
