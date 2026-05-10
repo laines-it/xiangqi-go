@@ -12,6 +12,53 @@ type Bitboard struct {
 	Hi uint64
 }
 
+func (b *Bitboard) Set(index Square) {
+	if !IsOKSquare(index) {
+		panic(index)
+	}
+	if index < 64 {
+		b.Lo |= uint64(1) << uint(index)
+		return
+	}
+	b.Hi |= uint64(1) << uint(index-64)
+}
+
+func (b *Bitboard) Clear(index Square) {
+	if !IsOKSquare(index) {
+		panic(index)
+	}
+	if index < 64 {
+		b.Lo &^= uint64(1) << uint(index)
+		return
+	}
+	b.Hi &^= uint64(1) << uint(index-64)
+}
+
+func (b Bitboard) Has(index Square) bool {
+	if !IsOKSquare(index) {
+		panic(index)
+	}
+	if index < 64 {
+		return b.Lo&(uint64(1)<<uint(index)) != 0
+	}
+	return b.Hi&(uint64(1)<<uint(index-64)) != 0
+}
+
+func (b Bitboard) IsZero() bool {
+	return b == Bitboard{}
+}
+
+func (b Bitboard) LSB() Square {
+	if b.IsZero() {
+		return SQ_NONE
+	}
+	return Lsb(b)
+}
+
+func (b *Bitboard) PopLSB() Square {
+	return PopLsb(b)
+}
+
 // From64 converts v to a Bitboard value.
 func From64(v uint64) Bitboard {
 	return Bitboard{
@@ -114,6 +161,10 @@ func (u Bitboard) Rsh(n uint) (s Bitboard) {
 // And returns u&v.
 func (u Bitboard) And(v Bitboard) Bitboard {
 	return Bitboard{u.Lo & v.Lo, u.Hi & v.Hi}
+}
+
+func (u Bitboard) AndNot(v Bitboard) Bitboard {
+	return Bitboard{u.Lo &^ v.Lo, u.Hi &^ v.Hi}
 }
 
 func (u Bitboard) Or(v Bitboard) Bitboard {

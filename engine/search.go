@@ -297,9 +297,13 @@ func negamaxABAbort(ctx *SearchContext, alpha, beta Value, pos *PositionNG, dept
 		}
 
 		legalMoves++
+		parentPly := pos.GamePly
+		quietMove := !pos.Capture(currentMove)
+		isHashMove := currentMove == ttMove
+		isKillerMove := currentMove == ctx.Killers[parentPly][0] || currentMove == ctx.Killers[parentPly][1]
 
 		// futility pruning
-		if futilityPruning > 0 && movesSearched > 0 && !pos.Capture(currentMove) && !pos.GivesCheck(currentMove) {
+		if futilityPruning > 0 && movesSearched > 0 && quietMove && !pos.GivesCheck(currentMove) {
 			continue
 		}
 		pos.DoMove(currentMove, searchState(ctx, pos))
@@ -307,22 +311,12 @@ func negamaxABAbort(ctx *SearchContext, alpha, beta Value, pos *PositionNG, dept
 			score = -negamaxABAbort(ctx, -beta, -alpha, pos, depth-1, true, pvTable, pvLength, abort)
 		} else {
 			// LMR
-			if IsOKMove(ctx.Killers[pos.GamePly][0]) && IsOKMove(ctx.Killers[pos.GamePly][1]) {
-				mFrom := FromSQ(currentMove)
-				mTo := ToSQ(currentMove)
-				k0From := FromSQ(ctx.Killers[pos.GamePly][0])
-				k0To := ToSQ(ctx.Killers[pos.GamePly][0])
-				k1From := FromSQ(ctx.Killers[pos.GamePly][1])
-				k1To := ToSQ(ctx.Killers[pos.GamePly][1])
-				if !pvNode && movesSearched > 3 && depth > 2 &&
-					!inCheck &&
-					(mFrom != k0From || mTo != k0To) &&
-					(mFrom != k1From || mTo != k1To) &&
-					!pos.Capture(currentMove) {
-					score = -negamaxABAbort(ctx, -alpha-1, -alpha, pos, depth-2, true, pvTable, pvLength, abort)
-				} else {
-					score = alpha + 1
-				}
+			if !pvNode && movesSearched > 3 && depth > 2 &&
+				!inCheck &&
+				quietMove &&
+				!isHashMove &&
+				!isKillerMove {
+				score = -negamaxABAbort(ctx, -alpha-1, -alpha, pos, depth-2, true, pvTable, pvLength, abort)
 			} else {
 				score = alpha + 1
 			}
@@ -336,7 +330,6 @@ func negamaxABAbort(ctx *SearchContext, alpha, beta Value, pos *PositionNG, dept
 		}
 
 		pos.UndoMove(currentMove)
-		quietMove := !pos.Capture(currentMove)
 		movesSearched++
 
 		if score > alpha {
@@ -354,8 +347,7 @@ func negamaxABAbort(ctx *SearchContext, alpha, beta Value, pos *PositionNG, dept
 				writeHashEntryForSearch(ctx, pos.St.Top().key, pos.St.Top().key2, int16(beta), bestMove, depth, uint8(pos.GamePly), TT_BETA)
 				// store killer moves
 				if quietMove {
-					ctx.Killers[pos.GamePly][1] = ctx.Killers[pos.GamePly][0]
-					ctx.Killers[pos.GamePly][0] = currentMove
+					recordKillerMove(&ctx.Killers, pos.GamePly, currentMove)
 				}
 				return beta
 			}
@@ -510,9 +502,14 @@ func writeHashEntryReuseAnyMove(key, key2 Key, score int16, bestMove MoveNG, dep
 
 func writeHashEntryWithMoveReuse(key, key2 Key, score int16, bestMove MoveNG, depth, ply uint8, flag int8, reuseAnyMove bool) {
 	entry := &TT.Entries[key&TT.Mask]
+	stored, ok := entry.Load()
+	currentAge := uint8(age.Load())
+	if !shouldReplaceTTEntry(stored, ok, depth, flag, currentAge) {
+		return
+	}
 	if !IsOKMove(bestMove) {
-		if data, ok := entry.Load(); ok && data.Key == key && data.Key2 == key2 && shouldReuseTTMove(data, depth, reuseAnyMove) {
-			bestMove = data.Move
+		if ok && stored.Key == key && stored.Key2 == key2 && shouldReuseTTMove(stored, depth, reuseAnyMove) {
+			bestMove = stored.Move
 		}
 	}
 	if score < -MATE_SCORE {
@@ -528,7 +525,7 @@ func writeHashEntryWithMoveReuse(key, key2 Key, score int16, bestMove MoveNG, de
 		Flag:  flag,
 		Depth: depth,
 		Move:  bestMove,
-		Age:   uint8(age.Load()),
+		Age:   currentAge,
 	})
 }
 

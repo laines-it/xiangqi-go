@@ -1,6 +1,9 @@
 package engine
 
-import "unsafe"
+import (
+	"sync"
+	"unsafe"
+)
 
 const defaultMHTMegabytes = 4
 
@@ -23,6 +26,7 @@ type MinorHashEntry struct {
 type MinorHashTable struct {
 	Entries []MinorHashEntry
 	Mask    uint64
+	mu      sync.RWMutex
 }
 
 var MHT = NewMinorHashTable(defaultMHTMegabytes)
@@ -38,10 +42,16 @@ func NewMinorHashTable(megabytes int) *MinorHashTable {
 }
 
 func MHTClear() {
+	MHT.mu.Lock()
+	defer MHT.mu.Unlock()
+
 	clear(MHT.Entries)
 }
 
 func ProbeMHT(checksum Key, phase Phase) (MinorHashEntry, bool) {
+	MHT.mu.RLock()
+	defer MHT.mu.RUnlock()
+
 	entry := MHT.Entries[checksum&MHT.Mask]
 	if entry.Checksum == checksum && entry.Phase == phase {
 		return entry, true
@@ -50,6 +60,9 @@ func ProbeMHT(checksum Key, phase Phase) (MinorHashEntry, bool) {
 }
 
 func StoreMHT(entry MinorHashEntry) {
+	MHT.mu.Lock()
+	defer MHT.mu.Unlock()
+
 	MHT.Entries[entry.Checksum&MHT.Mask] = entry
 }
 

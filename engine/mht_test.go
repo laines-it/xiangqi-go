@@ -35,6 +35,52 @@ func TestMinorHashChangesOnlyForMinorMoves(t *testing.T) {
 	}
 }
 
+func TestMinorHashIgnoresMajorConfiguration(t *testing.T) {
+	var withMajors PositionNG
+	withMajors.Set(initialFen)
+
+	var withoutMajors PositionNG
+	withoutMajors.Set("2bakab2/9/9/p1p1p1p1p/9/9/P1P1P1P1P/9/9/2BAKAB2 w - - 0 1")
+
+	if withMajors.MinorHash() != withoutMajors.MinorHash() {
+		t.Fatalf("same minor placement should produce same key: got %d and %d", withMajors.MinorHash(), withoutMajors.MinorHash())
+	}
+}
+
+func TestMinorHashChangesForEachMinorPieceFamily(t *testing.T) {
+	tests := []struct {
+		name string
+		move string
+	}{
+		{name: "pawn", move: "a3a4"},
+		{name: "advisor", move: "d0e1"},
+		{name: "elephant", move: "c0e2"},
+		{name: "general", move: "e0e1"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var pos PositionNG
+			pos.Set(initialFen)
+			start := pos.MinorHash()
+
+			move, err := ParseUCIMove(&pos, tc.move)
+			if err != nil {
+				t.Fatalf("parse %s: %v", tc.move, err)
+			}
+
+			var st StateInfo
+			pos.DoMove(move, &st)
+			if pos.MinorHash() == start {
+				t.Fatalf("%s move %s did not change minor key", tc.name, tc.move)
+			}
+			if pos.MinorHash() != pos.computeFullMinorHash() {
+				t.Fatalf("%s move %s left incremental minor key out of sync", tc.name, tc.move)
+			}
+		})
+	}
+}
+
 func TestMinorHashTableCachesMinorEval(t *testing.T) {
 	MHTClear()
 	defer MHTClear()

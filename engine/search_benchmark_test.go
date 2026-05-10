@@ -1,11 +1,8 @@
 package engine
 
 import (
-	"context"
 	"testing"
 	"time"
-
-	"github.com/hmgle/godogpaw/pikafish"
 )
 
 var negamaxBenchmarkScoreSink Value
@@ -82,11 +79,11 @@ func BenchmarkSequentialSearchMoves(b *testing.B) {
 					return pos.SearchPosition_ab(depth)
 				})
 			})
-			// b.Run("YBWC", func(b *testing.B) {
-			// 	benchmarkSequentialSearchMoves(b, func(pos *PositionNG) (MoveNG, Value) {
-			// 		return pos.SearchPositionYBWC(depth)
-			// 	})
-			// })
+			b.Run("YBWC", func(b *testing.B) {
+				benchmarkSequentialSearchMoves(b, func(pos *PositionNG) (MoveNG, Value) {
+					return pos.SearchPositionYBWC(depth)
+				})
+			})
 			b.Run("LazySMP", func(b *testing.B) {
 				for _, threads := range sequentialSearchBenchmarkLazySMPThreads {
 					threads := threads
@@ -96,6 +93,54 @@ func BenchmarkSequentialSearchMoves(b *testing.B) {
 						})
 					})
 				}
+			})
+		})
+	}
+}
+
+func BenchmarkAlphaBeta(b *testing.B) {
+	for _, depth := range sequentialSearchBenchmarkDepths {
+		depth := depth
+		b.Run("depth_"+itoaBenchmark(int(depth)), func(b *testing.B) {
+			benchmarkNegamaxAB(b, sequentialSearchBenchmarkFEN, depth)
+		})
+	}
+}
+
+func BenchmarkYBWC(b *testing.B) {
+	for _, depth := range sequentialSearchBenchmarkDepths {
+		b.Run("depth_"+itoaBenchmark(int(depth)), func(b *testing.B) {
+			benchmarkSequentialSearchMoves(b, func(pos *PositionNG) (MoveNG, Value) {
+				return pos.SearchPositionYBWC(depth)
+			})
+		})
+	}
+}
+
+func BenchmarkLazySMP(b *testing.B) {
+	for _, depth := range sequentialSearchBenchmarkDepths {
+		depth := depth
+		b.Run("depth_"+itoaBenchmark(int(depth)), func(b *testing.B) {
+			for _, threads := range sequentialSearchBenchmarkLazySMPThreads {
+				threads := threads
+				b.Run("threads_"+itoaBenchmark(threads), func(b *testing.B) {
+					benchmarkSequentialSearchMoves(b, func(pos *PositionNG) (MoveNG, Value) {
+						return pos.SearchPositionLazySMP(depth, threads)
+					})
+				})
+			}
+		})
+	}
+}
+
+func BenchmarkLazySMP5(b *testing.B) {
+	for _, depth := range sequentialSearchBenchmarkDepths {
+		depth := depth
+		b.Run("depth_"+itoaBenchmark(int(depth)), func(b *testing.B) {
+			b.Run("threads_"+itoaBenchmark(5), func(b *testing.B) {
+				benchmarkSequentialSearchMoves(b, func(pos *PositionNG) (MoveNG, Value) {
+					return pos.SearchPositionLazySMP(depth, 5)
+				})
 			})
 		})
 	}
@@ -118,33 +163,6 @@ func BenchmarkSearchAccuracyFixedFEN(b *testing.B) {
 						})
 					})
 				}
-			})
-			b.Run("Pikafish", func(b *testing.B) {
-				pika, err := pikafish.NewFromEnv()
-				if err != nil {
-					b.Skipf("Pikafish is not available: %v", err)
-				}
-				defer pika.Close()
-
-				benchmarkSequentialSearchMoves(b, func(pos *PositionNG) (MoveNG, Value) {
-					timeout := time.Duration(max(depth, 1)) * time.Minute
-					ctx, cancel := context.WithTimeout(context.Background(), timeout)
-					defer cancel()
-
-					result, err := pika.BestMove(ctx, pos.FEN(), int(depth))
-					if err != nil {
-						b.Fatalf("Pikafish search failed: %v", err)
-					}
-					move, err := ParseUCIMove(pos, result.BestMove)
-					if err != nil {
-						b.Fatalf("Pikafish returned invalid move %q: %v", result.BestMove, err)
-					}
-					if !result.HasScore {
-						return move, VALUE_DRAW
-					}
-					return move, Value(result.Score)
-
-				})
 			})
 		})
 	}

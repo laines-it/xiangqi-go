@@ -115,9 +115,7 @@ func TTSave(key, key2 Key, score int16, flag int8, ply, depth uint8, move MoveNG
 	entry := &TT.Entries[key&TT.Mask]
 	stored, ok := entry.Load()
 	currentAge := uint8(age.Load())
-	if !ok ||
-		(stored.Age < currentAge && flag == int8(TT_EXACT)) ||
-		stored.Depth-2*(currentAge-stored.Age)+boolTouint8(flag != int8(TT_EXACT) && stored.Flag == int8(TT_EXACT)) <= depth {
+	if shouldReplaceTTEntry(stored, ok, depth, flag, currentAge) {
 		// If the score we get from the transposition table is a checkmate score, we need
 		// to do a little extra work. This is because we store checkmates in the table using
 		// their distance from the node they're found in, not their distance from the root.
@@ -142,6 +140,28 @@ func TTSave(key, key2 Key, score int16, flag int8, ply, depth uint8, move MoveNG
 	}
 }
 
+// The TT uses one lock-free atomic slot per index and a depth-preferred
+// replacement policy. Deeper entries are kept unless the new entry is deep
+// enough, the stored entry is stale, or the new bound is exact.
+func shouldReplaceTTEntry(stored ttEntryData, ok bool, depth uint8, flag int8, currentAge uint8) bool {
+	if !ok {
+		return true
+	}
+	if stored.Age != currentAge && flag == TT_EXACT {
+		return true
+	}
+
+	ageDelta := int(currentAge) - int(stored.Age)
+	if ageDelta < 0 {
+		ageDelta += 256
+	}
+	storedPriority := int(stored.Depth) - 2*ageDelta
+	if flag != TT_EXACT && stored.Flag == TT_EXACT {
+		storedPriority++
+	}
+	return storedPriority <= int(depth)
+}
+
 func TTProbe(key, key2 Key) (ttEntryData, bool) {
 	entry := &TT.Entries[key&TT.Mask]
 	data, ok := entry.Load()
@@ -149,13 +169,6 @@ func TTProbe(key, key2 Key) (ttEntryData, bool) {
 		return data, true
 	}
 	return ttEntryData{}, false
-}
-
-func boolTouint8(b bool) uint8 {
-	if b {
-		return 1
-	}
-	return 0
 }
 
 func PrintTT(depth uint8) string {

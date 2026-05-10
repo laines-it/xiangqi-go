@@ -922,6 +922,34 @@ func (pos *PositionNG) SetState() {
 	}
 }
 
+func (pos *PositionNG) computeFullZobrist() (Key, Key) {
+	var key Key
+	var key2 Key
+	for b := pos.PiecesAllColor(ALL_PIECES); b != (Bitboard{}); {
+		s := PopLsb(&b)
+		pc := pos.PieceOn(s)
+		key ^= zkey.psq[pc][s]
+		key2 ^= zkey.psq2[pc][s]
+	}
+	if pos.SideToMove == BLACK {
+		key ^= zkey.side
+		key2 ^= zkey.side2
+	}
+	return key, key2
+}
+
+func (pos *PositionNG) computeFullMinorHash() Key {
+	var key Key
+	for b := pos.PiecesAllColor(ALL_PIECES); b != (Bitboard{}); {
+		s := PopLsb(&b)
+		pc := pos.PieceOn(s)
+		if isMinorPieceType(TypeOf(pc)) {
+			key ^= zkey.minor[pc][s]
+		}
+	}
+	return key
+}
+
 func (pos *PositionNG) SeeGe(m MoveNG, threshold Value) bool {
 	var occupied Bitboard
 	return pos._SeeGe(m, &occupied, threshold)

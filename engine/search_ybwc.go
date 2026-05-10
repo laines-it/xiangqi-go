@@ -6,7 +6,7 @@ import (
 	"sync"
 )
 
-const ybwcMinSplitDepth uint8 = 6
+const ybwcMinSplitDepth uint8 = 8
 
 type ybwcContextKey struct{}
 type ybwcHelperContextKey struct{}
@@ -14,8 +14,6 @@ type ybwcHelperContextKey struct{}
 type ybwcControl struct {
 	workers chan struct{}
 }
-
-var ybwcTTMu sync.Mutex
 
 type searchNode struct {
 	alpha Value
@@ -66,16 +64,10 @@ func isYBWCHelper(ctx context.Context) bool {
 }
 
 func ybwcReadHashEntry(key, key2 Key, alpha, beta int16, depth, ply uint8) (int16, MoveNG) {
-	ybwcTTMu.Lock()
-	defer ybwcTTMu.Unlock()
-
 	return readHashEntry(key, key2, alpha, beta, depth, ply)
 }
 
 func ybwcWriteHashEntry(key, key2 Key, score int16, bestMove MoveNG, depth, ply uint8, flag int8) {
-	ybwcTTMu.Lock()
-	defer ybwcTTMu.Unlock()
-
 	writeHashEntryReuseAnyMove(key, key2, score, bestMove, depth, ply, flag)
 }
 
@@ -119,10 +111,6 @@ func ybwcEnterNode(ctx context.Context, pos *PositionNG, node searchNode, depth 
 
 	if pos.GamePly > 0 && pos.IsRepetition() {
 		return node, true, -MATERIAL_WEIGHTS[W_CANNON]
-	}
-
-	if depth == 0 {
-		return node, true, pos.Evaluate()
 	}
 
 	if node.alpha < -Value(MATE_VALUE) {
@@ -183,8 +171,7 @@ func ybwcRecordCutoff(ctx context.Context, search *SearchContext, pos *PositionN
 		return
 	}
 
-	search.Killers[pos.GamePly][1] = search.Killers[pos.GamePly][0]
-	search.Killers[pos.GamePly][0] = move
+	recordKillerMove(&search.Killers, pos.GamePly, move)
 }
 
 func ybwcStoreBound(pos *PositionNG, depth uint8, score, oldAlpha, beta Value, bestMove MoveNG) {
@@ -196,6 +183,20 @@ func ybwcStoreBound(pos *PositionNG, depth uint8, score, oldAlpha, beta Value, b
 	}
 
 	ybwcWriteHashEntry(pos.St.Top().key, pos.St.Top().key2, int16(score), bestMove, depth, uint8(pos.GamePly), flag)
+}
+
+func ybwcSequentialSearch(ctx context.Context, search *SearchContext, pos *PositionNG, node searchNode, depth uint8, doNullMove bool) Value {
+	if ctx.Err() != nil {
+		return node.alpha
+	}
+	if isYBWCHelper(ctx) {
+		return negamaxABAbort(search, node.alpha, node.beta, pos, depth, doNullMove, nil, nil, nil)
+	}
+	return negamaxABAbort(search, node.alpha, node.beta, pos, depth, doNullMove, &PvTable, &PvLength, nil)
+}
+
+func ybwcCanSplit(ctx context.Context, pos *PositionNG, depth uint8) bool {
+	return depth >= ybwcMinSplitDepth && pos.GamePly == 0 && !isYBWCHelper(ctx)
 }
 
 func ybwcSearchParallelSiblings(ctx context.Context, search *SearchContext, pos *PositionNG, mp *MovePicker, depth uint8, node searchNode, bestScore Value, bestMove MoveNG) (searchNode, Value, MoveNG, bool) {
@@ -278,6 +279,10 @@ func negamaxYBWC(ctx context.Context, search *SearchContext, pos *PositionNG, no
 		return score
 	}
 
+	if !ybwcCanSplit(ctx, pos, depth) {
+		return ybwcSequentialSearch(ctx, search, pos, node, depth, doNullMove)
+	}
+
 	if pos.Checkers().IsNotZero() {
 		depth++
 	}
@@ -315,63 +320,46 @@ func negamaxYBWC(ctx context.Context, search *SearchContext, pos *PositionNG, no
 		node.alpha = bestScore
 	}
 
-	if depth < ybwcMinSplitDepth {
-		for move := nextLegalOrderedMove(pos, &mp); move != MOVE_NONE; move = nextLegalOrderedMove(pos, &mp) {
-			score := ybwcSearchSibling(ctx, search, pos, move, depth, node.alpha, node.beta, bestScore)
-			if ctx.Err() != nil {
-				return oldAlpha
-			}
-			if score <= bestScore {
-				continue
-			}
-
-			bestScore = score
-			bestMove = move
-			if score > node.alpha {
-				node.alpha = score
-			}
-			if score >= node.beta {
-				break
-			}
-		}
-
-		if bestMove != firstMove {
-			ybwcRecordBestLine(ctx, search, pos, bestMove, depth)
-		}
-		if bestScore >= node.beta {
-			ybwcRecordCutoff(ctx, search, pos, bestMove)
-		}
-	} else {
-		var aborted bool
-		node, bestScore, bestMove, aborted = ybwcSearchParallelSiblings(ctx, search, pos, &mp, depth, node, bestScore, bestMove)
-		if aborted {
-			return oldAlpha
-		}
-		if bestMove != firstMove {
-			ybwcRecordBestLine(ctx, search, pos, bestMove, depth)
-		}
-		if bestScore >= node.beta {
-			ybwcRecordCutoff(ctx, search, pos, bestMove)
-		}
+	var aborted bool
+	node, bestScore, bestMove, aborted = ybwcSearchParallelSiblings(ctx, search, pos, &mp, depth, node, bestScore, bestMove)
+	if aborted {
+		return oldAlpha
+	}
+	if bestMove != firstMove {
+		ybwcRecordBestLine(ctx, search, pos, bestMove, depth)
+	}
+	if bestScore >= node.beta {
+		ybwcRecordCutoff(ctx, search, pos, bestMove)
 	}
 
 	ybwcStoreBound(pos, depth, bestScore, oldAlpha, node.beta, bestMove)
 	return bestScore
 }
 
+func ybwcLegalBestMove(pos *PositionNG, bestMove MoveNG) MoveNG {
+	if IsOKMove(bestMove) && pos.Legal(bestMove) {
+		return bestMove
+	}
+
+	var moves [MAX_MOVES]MoveNG
+	size := pos.GenerateLEGAL(moves[:])
+	if size > 0 {
+		StorePvMove(moves[0], 0)
+		return moves[0]
+	}
+	return bestMove
+}
+
 func (pos *PositionNG) SearchPositionYBWC(depth uint8) (bestMove MoveNG, score Value) {
 	search := newSearchContext()
 	clearSearch(search, pos)
+	if depth < ybwcMinSplitDepth {
+		bestMove, score = pos.searchPositionAB(search, depth)
+		return ybwcLegalBestMove(pos, bestMove), score
+	}
+
 	ctx := newYBWCContext()
 	score = negamaxYBWC(ctx, search, pos, searchNode{-VALUE_INFINITE, VALUE_INFINITE}, depth, false)
 	bestMove = PvTable[0]
-	if !IsOKMove(bestMove) || !pos.Legal(bestMove) {
-		var moves [MAX_MOVES]MoveNG
-		size := pos.GenerateLEGAL(moves[:])
-		if size > 0 {
-			bestMove = moves[0]
-			StorePvMove(bestMove, 0)
-		}
-	}
-	return bestMove, score
+	return ybwcLegalBestMove(pos, bestMove), score
 }

@@ -7,6 +7,7 @@ import (
 
 const lazySMPTBWinBound = VALUE_MATE_IN_MAX_PLY
 const lazySMPAggressiveTTMoveThreads = 6
+const lazySMPMinParallelDepth uint8 = 11
 
 type LazySMPOptions struct {
 	Threads    int
@@ -58,6 +59,12 @@ func (pos *PositionNG) SearchPositionLazySMPWithOptions(depth uint8, opts LazySM
 	opts = opts.normalized()
 	ctx := newSearchContext()
 	clearSearch(ctx, pos)
+	if depth < lazySMPMinParallelDepth || opts.Threads == 1 {
+		if depth >= 8 {
+			return pos.searchPositionLazySMPDirect(ctx, depth)
+		}
+		return pos.searchPositionAB(ctx, depth)
+	}
 	ctx.reuseAnyTTMove = opts.Threads < lazySMPAggressiveTTMoveThreads
 
 	rootMoves := lazySMPGenerateRootMoves(pos, ctx, depth)
@@ -119,6 +126,22 @@ func (pos *PositionNG) searchPositionLazySMPSynchronized(ctx *SearchContext, dep
 	bestMove = mainThread.rootMoves[0].Move
 	score = mainThread.rootMoves[0].Score
 	return bestMove, score
+}
+
+func (pos *PositionNG) searchPositionLazySMPDirect(ctx *SearchContext, depth uint8) (bestMove MoveNG, score Value) {
+	if depth > 4 {
+		prevScore := negamaxABAbort(ctx, -VALUE_INFINITE, VALUE_INFINITE, pos, 4, true, &PvTable, &PvLength, nil)
+		window := Value(160 + 20*int(depth))
+		alpha := max(prevScore-window, -VALUE_INFINITE)
+		beta := min(prevScore+window, VALUE_INFINITE)
+		score = negamaxABAbort(ctx, alpha, beta, pos, depth, true, &PvTable, &PvLength, nil)
+		if score > alpha && score < beta {
+			return PvTable[0], score
+		}
+	}
+
+	score = negamaxABAbort(ctx, -VALUE_INFINITE, VALUE_INFINITE, pos, depth, true, &PvTable, &PvLength, nil)
+	return PvTable[0], score
 }
 
 func (opts LazySMPOptions) normalized() LazySMPOptions {

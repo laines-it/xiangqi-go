@@ -42,3 +42,16 @@ func penalizeQuietHistory(history *HistoryTable, moves []MoveNG, color Color, de
 		UpdateHistory(history, move, color, -malus)
 	}
 }
+
+func recordKillerMove(killers *[MAX_MOVES][2]MoveNG, ply int, move MoveNG) {
+	if killers == nil || !IsOKMove(move) || ply < 0 || ply >= len(killers) {
+		return
+	}
+
+	if killers[ply][0] == move {
+		return
+	}
+
+	killers[ply][1] = killers[ply][0]
+	killers[ply][0] = move
+}
