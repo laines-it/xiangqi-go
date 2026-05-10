@@ -48,27 +48,9 @@ func BenchmarkRookAttackMap(b *testing.B) {
 	})
 	b.Run("MapAttack", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
-			/*
-				for s := SQ_A0; s <= SQ_I9; s++ {
-					attackMap := RookAttackMap[s]
-					for k := range attackMap {
-						_ = attackMap[k]
-					}
-				}
-			*/
 			_ = RookAttackMap[SQ_B3][Bitboard{}]
 		}
 	})
-
-	// go test -bench=RookAttackMap -benchmem -run=none
-	// goos: linux
-	// goarch: amd64
-	// pkg: github.com/hmgle/godogpaw/engine
-	// cpu: Intel(R) Core(TM) i5-5200U CPU @ 2.20GHz
-	// BenchmarkRookAttackMap/MagicAttack-4            168354465                7.206 ns/op           0 B/op          0 allocs/op
-	// BenchmarkRookAttackMap/MapAttack-4              67815272                16.41 ns/op            0 B/op          0 allocs/op
-	// PASS
-	// ok      github.com/hmgle/godogpaw/engine        7.220s
 }
 
 func BenchmarkLeast(b *testing.B) {
