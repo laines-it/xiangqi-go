@@ -32,8 +32,15 @@ func storePvMove(move MoveNG, searchPly int, pvTable *[MAX_MOVES * MAX_MOVES]Mov
 	if pvTable == nil || pvLength == nil {
 		return
 	}
+	if searchPly < 0 || searchPly >= len(pvLength) {
+		return
+	}
 
 	pvTable[searchPly*int(MAX_MOVES)+searchPly] = move
+	if searchPly+1 >= len(pvLength) {
+		pvLength[searchPly] = searchPly + 1
+		return
+	}
 	for nextPly := searchPly + 1; nextPly < pvLength[searchPly+1]; nextPly++ {
 		pvTable[searchPly*int(MAX_MOVES)+nextPly] = pvTable[(searchPly+1)*int(MAX_MOVES)+nextPly]
 	}
@@ -54,14 +61,14 @@ func quiescenceABAbort(ctx *SearchContext, alpha, beta Value, pos *PositionNG, p
 	if abort != nil && abort.Load() {
 		return alpha
 	}
+	if pos.GamePly >= int(MAX_MOVES) {
+		return pos.Evaluate()
+	}
 
 	if pvLength != nil {
 		pvLength[pos.GamePly] = pos.GamePly
 	}
 	evalation := pos.Evaluate()
-	if pos.GamePly >= int(MAX_MOVES) {
-		return evalation
-	}
 	if evalation >= beta {
 		return evalation
 	}
@@ -180,6 +187,9 @@ func negamaxABAbort(ctx *SearchContext, alpha, beta Value, pos *PositionNG, dept
 	if abort != nil && abort.Load() {
 		return alpha
 	}
+	if pos.GamePly >= int(MAX_MOVES) {
+		return pos.Evaluate()
+	}
 
 	if pvLength != nil {
 		pvLength[pos.GamePly] = pos.GamePly
@@ -199,7 +209,7 @@ func negamaxABAbort(ctx *SearchContext, alpha, beta Value, pos *PositionNG, dept
 		var scoreInt16 int16
 		scoreInt16, ttMove = readHashEntry(pos.St.Top().key, pos.St.Top().key2, int16(alpha), int16(beta), depth, uint8(pos.GamePly))
 		score = int32(scoreInt16)
-		if score != int32(NO_HASH) && !pvNode {
+		if score != int32(NO_HASH) && (!pvNode || (ctx != nil && ctx.trustTTInPV)) {
 			return score
 		}
 	}

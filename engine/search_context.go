@@ -9,6 +9,7 @@ type SearchContext struct {
 	stateStack     [MAX_PLY + 1]*StateInfo
 	Nodes          int
 	reuseAnyTTMove bool
+	trustTTInPV    bool
 }
 
 var searchContextPool sync.Pool
@@ -32,6 +33,7 @@ func releaseSearchContext(ctx *SearchContext) {
 func (ctx *SearchContext) clear() {
 	ctx.Nodes = 0
 	ctx.reuseAnyTTMove = false
+	ctx.trustTTInPV = false
 	clear(ctx.Killers[:])
 	clear(ctx.History[:])
 }

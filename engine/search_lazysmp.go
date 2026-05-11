@@ -7,7 +7,9 @@ import (
 
 const lazySMPTBWinBound = VALUE_MATE_IN_MAX_PLY
 const lazySMPAggressiveTTMoveThreads = 6
-const lazySMPMinParallelDepth uint8 = 11
+const lazySMPHelperMaxDepth uint8 = 2
+const lazySMPHelperStartDepth uint8 = 3
+const lazySMPHelperRootBudget = 1
 
 type LazySMPOptions struct {
 	Threads    int
@@ -59,13 +61,11 @@ func (pos *PositionNG) SearchPositionLazySMPWithOptions(depth uint8, opts LazySM
 	opts = opts.normalized()
 	ctx := newSearchContext()
 	clearSearch(ctx, pos)
-	if depth < lazySMPMinParallelDepth || opts.Threads == 1 {
-		if depth >= 8 {
-			return pos.searchPositionLazySMPDirect(ctx, depth)
-		}
+	if opts.Threads == 1 {
 		return pos.searchPositionAB(ctx, depth)
 	}
 	ctx.reuseAnyTTMove = opts.Threads < lazySMPAggressiveTTMoveThreads
+	ctx.trustTTInPV = true
 
 	rootMoves := lazySMPGenerateRootMoves(pos, ctx, depth)
 	if depth == 0 || len(rootMoves) == 0 {
@@ -83,7 +83,7 @@ func (pos *PositionNG) searchPositionLazySMPSynchronized(ctx *SearchContext, dep
 	mainThread := threads[0]
 
 	mainThread.prepareRootSearch(pos, rootMoves)
-	mainThread.searchRoot(1, -VALUE_INFINITE, VALUE_INFINITE)
+	mainThread.searchRootAB(1, -VALUE_INFINITE, VALUE_INFINITE)
 	lazySMPPublishMainPV(mainThread)
 
 	prevScore := mainThread.rootMoves[0].Score
@@ -125,23 +125,25 @@ func (pos *PositionNG) searchPositionLazySMPSynchronized(ctx *SearchContext, dep
 
 	bestMove = mainThread.rootMoves[0].Move
 	score = mainThread.rootMoves[0].Score
+	if !IsOKMove(bestMove) || !pos.Legal(bestMove) {
+		bestMove = lazySMPFallbackRootMove(pos, mainThread.rootMoves)
+	}
 	return bestMove, score
 }
 
-func (pos *PositionNG) searchPositionLazySMPDirect(ctx *SearchContext, depth uint8) (bestMove MoveNG, score Value) {
-	if depth > 4 {
-		prevScore := negamaxABAbort(ctx, -VALUE_INFINITE, VALUE_INFINITE, pos, 4, true, &PvTable, &PvLength, nil)
-		window := Value(160 + 20*int(depth))
-		alpha := max(prevScore-window, -VALUE_INFINITE)
-		beta := min(prevScore+window, VALUE_INFINITE)
-		score = negamaxABAbort(ctx, alpha, beta, pos, depth, true, &PvTable, &PvLength, nil)
-		if score > alpha && score < beta {
-			return PvTable[0], score
+func lazySMPFallbackRootMove(pos *PositionNG, rootMoves []LazySMPRootMove) MoveNG {
+	for _, rootMove := range rootMoves {
+		if IsOKMove(rootMove.Move) && pos.Legal(rootMove.Move) {
+			return rootMove.Move
 		}
 	}
 
-	score = negamaxABAbort(ctx, -VALUE_INFINITE, VALUE_INFINITE, pos, depth, true, &PvTable, &PvLength, nil)
-	return PvTable[0], score
+	var moves [MAX_MOVES]MoveNG
+	size := pos.GenerateLEGAL(moves[:])
+	if size == 0 {
+		return MOVE_NONE
+	}
+	return moves[0]
 }
 
 func (opts LazySMPOptions) normalized() LazySMPOptions {
@@ -164,6 +166,7 @@ func lazySMPCreateThreads(pos *PositionNG, rootCtx *SearchContext, opts LazySMPO
 			threadPos = lazySMPCopyPosition(pos, threadCtx)
 		}
 		threadCtx.reuseAnyTTMove = rootCtx.reuseAnyTTMove
+		threadCtx.trustTTInPV = rootCtx.trustTTInPV
 
 		threads[idx] = &lazySMPThreadData{
 			idx:        idx,
@@ -216,22 +219,31 @@ func lazySMPRunAspirationIteration(rootPos *PositionNG, threads []*lazySMPThread
 		thread.prepareRootSearch(rootPos, rootMoves)
 	}
 
-	for _, worker := range workers {
-		worker.start <- lazySMPWork{
-			depth: depth,
-			alpha: alpha,
-			beta:  beta,
+	useHelpers := lazySMPUseHelpersAtDepth(depth)
+	if useHelpers {
+		for _, worker := range workers {
+			worker.start <- lazySMPWork{
+				depth: depth,
+				alpha: alpha,
+				beta:  beta,
+			}
 		}
 	}
 
-	threads[0].searchRoot(lazySMPSearchDepth(depth, 0), alpha, beta)
+	threads[0].searchRootAB(lazySMPSearchDepth(depth, 0), alpha, beta)
 
-	for _, worker := range workers {
-		worker.abort.Store(true)
+	if useHelpers {
+		for _, worker := range workers {
+			worker.abort.Store(true)
+		}
+		for _, worker := range workers {
+			<-worker.done
+		}
 	}
-	for _, worker := range workers {
-		<-worker.done
-	}
+}
+
+func lazySMPUseHelpersAtDepth(depth uint8) bool {
+	return depth >= lazySMPHelperStartDepth
 }
 
 func (thread *lazySMPThreadData) prepareRootSearch(rootPos *PositionNG, rootMoves []LazySMPRootMove) {
@@ -242,6 +254,11 @@ func (thread *lazySMPThreadData) prepareRootSearch(rootPos *PositionNG, rootMove
 }
 
 func lazySMPSearchDepth(depth uint8, threadIdx int) uint8 {
+	if threadIdx > 0 {
+		if depth > 1 {
+			return min(depth-1, lazySMPHelperMaxDepth)
+		}
+	}
 	return depth
 }
 
@@ -275,12 +292,15 @@ func (thread *lazySMPThreadData) searchRoot(depth uint8, alpha, beta Value, abor
 			thread.aborted = true
 			break
 		}
+		if thread.helperRootBudgetReached() {
+			break
+		}
 
 		move := thread.rootMoves[i].Move
 		thread.pos.DoMove(move, searchState(thread.ctx, thread.pos))
 
 		thread.pv.clear()
-		score := -negamaxABWithPVAbort(thread.ctx, -beta, -alpha, thread.pos, depth-1, true, &thread.pv, abortFlag)
+		score := thread.searchRootMove(depth, i, alpha, beta, abortFlag)
 		thread.pos.UndoMove(move)
 
 		if abortFlag != nil && abortFlag.Load() {
@@ -315,6 +335,73 @@ func (thread *lazySMPThreadData) searchRoot(depth uint8, alpha, beta Value, abor
 	if thread.searchedRoots == len(thread.rootMoves) {
 		thread.completedDepth = depth
 	}
+}
+
+func (thread *lazySMPThreadData) searchRootAB(depth uint8, alpha, beta Value) {
+	if len(thread.rootMoves) == 0 {
+		return
+	}
+
+	for i := range thread.rootMoves {
+		thread.rootMoves[i].Searched = false
+		thread.rootMoves[i].Depth = depth
+	}
+	thread.searchedRoots = 0
+	thread.completedDepth = 0
+	thread.aborted = false
+	thread.pv.clear()
+
+	if depth == 0 {
+		return
+	}
+
+	score := negamaxABWithPV(thread.ctx, alpha, beta, thread.pos, depth, true, &thread.pv)
+	bestMove := thread.pv.table[0]
+	if !IsOKMove(bestMove) {
+		bestMove = thread.rootMoves[0].Move
+	}
+
+	bestMoveIdx := -1
+	for i := range thread.rootMoves {
+		if thread.rootMoves[i].Move == bestMove {
+			bestMoveIdx = i
+			break
+		}
+	}
+	if bestMoveIdx < 0 {
+		bestMoveIdx = 0
+		bestMove = thread.rootMoves[0].Move
+	}
+
+	thread.rootMoves[bestMoveIdx].Score = score
+	thread.rootMoves[bestMoveIdx].Searched = true
+	thread.rootMoves[bestMoveIdx].Depth = depth
+	lazySMPBuildPVFromRootSearch(&thread.rootMoves[bestMoveIdx], bestMove, &thread.pv)
+	thread.searchedRoots = len(thread.rootMoves)
+	thread.completedDepth = depth
+
+	if bestMoveIdx > 0 {
+		best := thread.rootMoves[bestMoveIdx]
+		copy(thread.rootMoves[1:bestMoveIdx+1], thread.rootMoves[:bestMoveIdx])
+		thread.rootMoves[0] = best
+	}
+}
+
+func (thread *lazySMPThreadData) helperRootBudgetReached() bool {
+	return thread.idx > 0 && thread.searchedRoots >= lazySMPHelperRootBudget
+}
+
+func (thread *lazySMPThreadData) searchRootMove(depth uint8, movesSearched int, alpha, beta Value, abortFlag *atomic.Bool) Value {
+	if depth < 5 || movesSearched == 0 {
+		return -negamaxABWithPVAbort(thread.ctx, -beta, -alpha, thread.pos, depth-1, true, &thread.pv, abortFlag)
+	}
+
+	score := -negamaxABWithPVAbort(thread.ctx, -alpha-1, -alpha, thread.pos, depth-1, true, &thread.pv, abortFlag)
+	if score > alpha && score < beta && (abortFlag == nil || !abortFlag.Load()) {
+		thread.pv.clear()
+		score = -negamaxABWithPVAbort(thread.ctx, -beta, -alpha, thread.pos, depth-1, true, &thread.pv, abortFlag)
+	}
+	return score
 }
 
 func lazySMPGenerateRootMoves(pos *PositionNG, ctx *SearchContext, depth uint8) []LazySMPRootMove {
@@ -395,6 +482,28 @@ func lazySMPBuildPVFromSearch(root *LazySMPRootMove, rootMove MoveNG, searchLine
 
 	for ply := 1; ply < searchLine.length[1] && root.PVLength < int(MAX_MOVES); ply++ {
 		move := searchLine.table[int(MAX_MOVES)+ply]
+		if !IsOKMove(move) {
+			break
+		}
+		root.PV[root.PVLength] = move
+		root.PVLength++
+	}
+}
+
+func lazySMPBuildPVFromRootSearch(root *LazySMPRootMove, rootMove MoveNG, searchLine *searchPV) {
+	clear(root.PV[:])
+	root.PVLength = 0
+
+	if searchLine == nil || searchLine.length[0] == 0 {
+		if IsOKMove(rootMove) {
+			root.PV[0] = rootMove
+			root.PVLength = 1
+		}
+		return
+	}
+
+	for ply := 0; ply < searchLine.length[0] && root.PVLength < int(MAX_MOVES); ply++ {
+		move := searchLine.table[ply]
 		if !IsOKMove(move) {
 			break
 		}

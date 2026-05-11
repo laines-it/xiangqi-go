@@ -169,7 +169,7 @@ func BenchmarkSearchAccuracyFixedFEN(b *testing.B) {
 	}
 }
 
-func BenchmarkSearchCountersFixedFEN(b *testing.B) {
+func BenchmarkSearchCounters(b *testing.B) {
 	for _, depth := range sequentialSearchBenchmarkDepths {
 		b.Run("depth_"+itoaBenchmark(int(depth)), func(b *testing.B) {
 			b.Run("AlphaBeta", func(b *testing.B) {
@@ -177,11 +177,11 @@ func BenchmarkSearchCountersFixedFEN(b *testing.B) {
 					return pos.SearchPosition_ab(depth)
 				})
 			})
-			// b.Run("YBWC", func(b *testing.B) {
-			// 	benchmarkSearchCountersFixedFEN(b, func(pos *PositionNG) (MoveNG, Value) {
-			// 		return pos.SearchPositionYBWC(depth)
-			// 	})
-			// })
+			b.Run("YBWC", func(b *testing.B) {
+				benchmarkSearchCountersFixedFEN(b, func(pos *PositionNG) (MoveNG, Value) {
+					return pos.SearchPositionYBWC(depth)
+				})
+			})
 			b.Run("LazySMP", func(b *testing.B) {
 				for _, threads := range sequentialSearchBenchmarkLazySMPThreads {
 					threads := threads
@@ -204,8 +204,9 @@ func benchmarkSequentialSearchMoves(b *testing.B, search func(*PositionNG) (Move
 	var totalSearchNanos int64
 	var searchedMoves int
 
+	var pos PositionNG
 	for i := 0; i < b.N; i++ {
-		pos := generateBenchmarkPosition(sequentialSearchBenchmarkFEN)
+		pos.Set(sequentialSearchBenchmarkFEN)
 		TTClear()
 		MHTClear()
 
