@@ -388,7 +388,7 @@ func negamaxABAbort(ctx *SearchContext, alpha, beta Value, pos *PositionNG, dept
 // search position for the best move
 func (pos *PositionNG) SearchPosition_ab(depth uint8) (bestMove MoveNG, score Value) {
 	ctx := newSearchContext()
-	clearSearch(ctx, pos)
+	beginRootSearch(ctx, pos)
 	return pos.searchPositionAB(ctx, depth)
 }
 
@@ -424,7 +424,7 @@ func (pos *PositionNG) searchPositionAB(ctx *SearchContext, depth uint8) (bestMo
 // search position for the best move
 func (pos *PositionNG) SearchPosition(depth uint8) (bestMove MoveNG) {
 	ctx := newSearchContext()
-	clearSearch(ctx, pos)
+	beginRootSearch(ctx, pos)
 	//now := time.Now()
 	var prevScore Value
 	// iterative deepening
@@ -451,6 +451,11 @@ func (pos *PositionNG) SearchPosition(depth uint8) (bestMove MoveNG) {
 	}
 	bestMove = PvTable[0]
 	return bestMove
+}
+
+func beginRootSearch(ctx *SearchContext, pos *PositionNG) {
+	UpdateAge()
+	clearSearch(ctx, pos)
 }
 
 func clearSearch(ctx *SearchContext, pos *PositionNG) {

@@ -6,7 +6,7 @@ import (
 	"sync"
 )
 
-const ybwcMinSplitDepth uint8 = 8
+const ybwcMinSplitDepth uint8 = 4
 
 type ybwcContextKey struct{}
 type ybwcHelperContextKey struct{}
@@ -352,7 +352,7 @@ func ybwcLegalBestMove(pos *PositionNG, bestMove MoveNG) MoveNG {
 
 func (pos *PositionNG) SearchPositionYBWC(depth uint8) (bestMove MoveNG, score Value) {
 	search := newSearchContext()
-	clearSearch(search, pos)
+	beginRootSearch(search, pos)
 	if depth < ybwcMinSplitDepth {
 		bestMove, score = pos.searchPositionAB(search, depth)
 		return ybwcLegalBestMove(pos, bestMove), score

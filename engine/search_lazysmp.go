@@ -60,7 +60,7 @@ func (pos *PositionNG) SearchPositionLazySMP(depth uint8, threadCount int) (best
 func (pos *PositionNG) SearchPositionLazySMPWithOptions(depth uint8, opts LazySMPOptions) (bestMove MoveNG, score Value) {
 	opts = opts.normalized()
 	ctx := newSearchContext()
-	clearSearch(ctx, pos)
+	beginRootSearch(ctx, pos)
 	if opts.Threads == 1 {
 		return pos.searchPositionAB(ctx, depth)
 	}

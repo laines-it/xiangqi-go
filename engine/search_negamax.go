@@ -155,7 +155,7 @@ type SearchResult struct {
 // ParallelSearch запускает поиск всех корневых ходов параллельно
 func (pos *PositionNG) ParallelSearch(depth uint8) (bestMove MoveNG, bestScore Value) {
 	ctx := newSearchContext()
-	clearSearch(ctx, pos)
+	beginRootSearch(ctx, pos)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 
